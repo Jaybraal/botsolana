@@ -137,14 +137,15 @@ def detect_swap(tx: dict) -> dict | None:
         mint_out = token_out_info["mint"]
 
         return {
-            "wallet":     wallet,
-            "program":    prog_name,
-            "token_in":   mint_in,
-            "token_out":  mint_out,
-            "symbol_in":  MINT_TO_SYMBOL.get(mint_in,  mint_in[:6]),
-            "symbol_out": MINT_TO_SYMBOL.get(mint_out, mint_out[:6]),
-            "amount_in":  abs(token_in_info["delta"]),
-            "amount_out": token_out_info["delta"],
+            "wallet":          wallet,
+            "program":         prog_name,
+            "token_in":        mint_in,
+            "token_out":       mint_out,
+            "symbol_in":       MINT_TO_SYMBOL.get(mint_in,  mint_in[:6]),
+            "symbol_out":      MINT_TO_SYMBOL.get(mint_out, mint_out[:6]),
+            "amount_in":       abs(token_in_info["delta"]),
+            "amount_out":      token_out_info["delta"],
+            "wallet_pre_sol":  pre_sol[0] if pre_sol else 0,  # lamports antes del swap
         }
 
     except Exception:
