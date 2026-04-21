@@ -16,6 +16,7 @@ from solana.rpc.api import Client
 from config import RPC_HTTP, WALLET_PUBKEY, WALLET_PRIVKEY, TRADE_AMOUNT_USD, SLIPPAGE_BPS
 from utils.jupiter import get_quote, get_swap_transaction, calc_price_impact, out_amount
 from utils.logger import get_logger
+from copytrade import simulator
 
 log    = get_logger("executor")
 client = Client(RPC_HTTP)
@@ -88,6 +89,7 @@ def execute_copy(swap: dict) -> bool:
             f"[yellow]{swap['symbol_in']}[/] → [green]{swap['symbol_out']}[/] "
             f"via [white]{swap['program']}[/]"
         )
+        simulator.process(swap)
         return True
 
     if not WALLET_PUBKEY:
