@@ -5,9 +5,11 @@ Cuando una wallet monitorizada compra un token → abrimos posición simulada.
 Cuando la misma wallet vende ese token → cerramos y calculamos ganancia/pérdida.
 
 El precio de entrada/salida se obtiene de DexScreener en el momento del swap.
-Posiciones guardadas en memoria (se resetean al reiniciar).
+Posiciones e historial persistidos en data/ para sobrevivir reinicios.
 """
 
+import json
+import os
 import time
 from datetime import datetime
 from utils.dexscreener import get_best_pair
@@ -15,11 +17,46 @@ from utils.logger import get_logger
 
 log = get_logger("simulator")
 
+os.makedirs("data", exist_ok=True)
+POSITIONS_FILE = "data/sim_positions.json"
+HISTORY_FILE   = "data/sim_history.json"
+
+
+def _load_positions() -> dict:
+    if os.path.exists(POSITIONS_FILE):
+        try:
+            with open(POSITIONS_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _load_history() -> list:
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def _save_positions():
+    with open(POSITIONS_FILE, "w") as f:
+        json.dump(_positions, f, indent=2)
+
+
+def _save_history():
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(_history, f, indent=2)
+
+
 # {wallet_address: {token_mint: posicion}}
-_positions: dict[str, dict[str, dict]] = {}
+_positions: dict[str, dict[str, dict]] = _load_positions()
 
 # Historial de trades cerrados
-_history: list[dict] = []
+_history: list[dict] = _load_history()
 
 # Capital simulado por trade (igual que TRADE_AMOUNT_USD)
 TRADE_AMOUNT_USD = 50.0
@@ -89,6 +126,7 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str):
     }
 
     _positions.setdefault(wallet, {})[token_mint] = pos
+    _save_positions()
 
     log.info(
         f"[SIM] 📥 ENTRADA | [cyan]{label}[/] compró [yellow]{symbol}[/] | "
@@ -134,6 +172,8 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str):
         "timestamp":    time.time(),
     }
     _history.append(trade)
+    _save_positions()
+    _save_history()
 
     icon  = "[bold green]✅ WIN [/]" if won else "[bold red]❌ LOSS[/]"
     color = "green" if won else "red"
