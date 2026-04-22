@@ -60,7 +60,7 @@ def fetch_transaction(sig: str) -> dict | None:
 
 # Control de deduplicación: no copiar la misma sig dos veces
 seen_sigs: set = set()
-# Control de rate: max 1 copy cada 2 segundos por wallet
+# Control de rate: max 1 copy cada 0.5s por (wallet, token_pair) — permite trades rápidos en tokens distintos
 last_copy: dict = {}
 
 
@@ -111,13 +111,15 @@ async def handle_message(msg: str):
             f"Amount in: {swap['amount_in']:,}"
         )
 
-        # Rate limit por wallet
-        wallet = swap["wallet"]
-        now    = time.time()
-        if now - last_copy.get(wallet, 0) < 2:
-            log.warning(f"Rate limit: ignorando copy de {wallet[:8]}... (muy seguido)")
+        # Rate limit por (wallet, token_pair) — permite trades rápidos en tokens distintos
+        wallet     = swap["wallet"]
+        token_pair = (swap.get("token_in", ""), swap.get("token_out", ""))
+        rate_key   = (wallet, token_pair)
+        now        = time.time()
+        if now - last_copy.get(rate_key, 0) < 0.5:
+            log.warning(f"Rate limit: ignorando copy de {wallet[:8]}... (mismo par <0.5s)")
             return
-        last_copy[wallet] = now
+        last_copy[rate_key] = now
 
         # Ejecutar copy en hilo separado para no bloquear el WebSocket
         loop = asyncio.get_event_loop()
