@@ -60,11 +60,14 @@ MAX_PRICE_IMPACT = float(os.getenv("MAX_PRICE_IMPACT", "2.0"))
 # el % máximo por trade sube — usando ganancias, no el capital base.
 # Formato: (ganancia_mínima_sobre_capital_inicial, max_trade_pct)
 SCALING_TIERS: list[tuple[float, float]] = [
-    (0.00, MAX_TRADE_PCT),  # base:        5% por trade
-    (0.10, 0.07),           # +10% profit: 7% por trade  (~$1.40 con $20)
-    (0.30, 0.10),           # +30% profit: 10% por trade (~$2.60 con $20+30%)
+    (0.00, MAX_TRADE_PCT),  # base:         5% por trade
+    (0.10, 0.07),           # +10% profit:  7% por trade
+    (0.30, 0.10),           # +30% profit: 10% por trade
     (0.60, 0.12),           # +60% profit: 12% por trade
     (1.00, 0.15),           # +100% profit: 15% por trade (capital doblado)
+    (2.00, 0.18),           # +200% profit: 18% por trade
+    (4.00, 0.22),           # +400% profit: 22% por trade
+    (7.00, 0.25),           # +700% profit: 25% por trade
 ]
 
 # --- Programas conocidos en Solana ---
