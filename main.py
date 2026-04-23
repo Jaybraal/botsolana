@@ -27,6 +27,7 @@ from rich        import box
 
 from config import TARGET_WALLETS, WALLET_PUBKEY
 from copytrade.watcher import watch
+from copytrade.learner import print_insights as print_learner_insights, load_rules
 from utils.logger import get_logger, console
 import json, os
 
@@ -155,6 +156,11 @@ def main():
         ))
 
     _print_wallets_panel()
+
+    # Mostrar patrones aprendidos si ya hay datos
+    if load_rules():
+        print_learner_insights()
+
     console.print(Rule("[dim]Conectando WebSocket...[/]", style="bright_black"))
     console.print()
 

@@ -20,10 +20,12 @@ WALLET_LABELS: dict[str, str] = {
     "2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f": "scalper-1",
     "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9": "scalper-2",
     "4BdKaxN8G6ka4GYtQQWk4G4dZRUTX2vQH9GcXdBREFUk": "selective",
+    "7SDs3PjT2mswKQ7Zo4FTucn9gJdtuW4jaacPA65BseHS": "watch-1",
+    "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK":  "watch-2",
 }
 
 # --- Config del bot (copy trade) ---
-SLIPPAGE_BPS     = int(os.getenv("SLIPPAGE_BPS", "50"))   # 50 = 0.5%
+SLIPPAGE_BPS     = int(os.getenv("SLIPPAGE_BPS", "100"))   # 100 = 1%
 
 # --- Modo proporcional ---
 # El bot invierte el mismo % del capital que invirtió la wallet objetivo.
@@ -32,15 +34,38 @@ PROPORTIONAL_MODE = os.getenv("PROPORTIONAL_MODE", "true").lower() == "true"
 
 # Tope máximo: nunca gastar más de este % de nuestro balance en un solo trade.
 # Protege contra wallets que van all-in de golpe.
-MAX_TRADE_PCT  = float(os.getenv("MAX_TRADE_PCT",  "0.10"))  # 10% máximo por trade
+MAX_TRADE_PCT  = float(os.getenv("MAX_TRADE_PCT",  "0.05"))  # 5% máximo por trade
 
 # Mínimo en lamports por trade (evita trades de polvo que no cubren las fees).
-# 0.005 SOL ≈ $0.75 — suficiente para cubrir fees de Pump.fun + Jupiter.
 MIN_TRADE_SOL  = float(os.getenv("MIN_TRADE_SOL",  "0.005"))  # en SOL
 
 # Máximo de posiciones abiertas simultáneamente.
-# Si ya hay 3 tokens comprados que no hemos vendido, no abrimos más.
-MAX_OPEN_COPIES = int(os.getenv("MAX_OPEN_COPIES", "3"))
+# Con capital pequeño, limitar a 2 para no sobreexponer.
+MAX_OPEN_COPIES = int(os.getenv("MAX_OPEN_COPIES", "2"))
+
+# --- Protección de capital ---
+# Si el balance cae por debajo de este % del capital inicial, el bot deja de operar.
+# 0.70 = parar si perdemos más del 30% del capital de inicio.
+STOP_LOSS_PCT   = float(os.getenv("STOP_LOSS_PCT",  "0.70"))
+
+# Reserva mínima de SOL que nunca se toca (para pagar fees de red).
+# 0.01 SOL ≈ $1.50 — cubre ~100 transacciones de Solana.
+MIN_RESERVE_SOL = float(os.getenv("MIN_RESERVE_SOL", "0.01"))
+
+# Price impact máximo aceptable. Sobre este % se aborta el trade.
+MAX_PRICE_IMPACT = float(os.getenv("MAX_PRICE_IMPACT", "2.0"))
+
+# Escalado progresivo del tamaño de trade según ganancia acumulada.
+# Cuando el balance supera cada umbral respecto al capital inicial,
+# el % máximo por trade sube — usando ganancias, no el capital base.
+# Formato: (ganancia_mínima_sobre_capital_inicial, max_trade_pct)
+SCALING_TIERS: list[tuple[float, float]] = [
+    (0.00, MAX_TRADE_PCT),  # base:        5% por trade
+    (0.10, 0.07),           # +10% profit: 7% por trade  (~$1.40 con $20)
+    (0.30, 0.10),           # +30% profit: 10% por trade (~$2.60 con $20+30%)
+    (0.60, 0.12),           # +60% profit: 12% por trade
+    (1.00, 0.15),           # +100% profit: 15% por trade (capital doblado)
+]
 
 # --- Programas conocidos en Solana ---
 JUPITER_V6      = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"

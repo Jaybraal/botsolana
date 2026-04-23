@@ -17,6 +17,7 @@ from solana.rpc.types import TokenAccountOpts
 from config import (
     RPC_HTTP, WALLET_PUBKEY, WALLET_PRIVKEY, SLIPPAGE_BPS,
     PROPORTIONAL_MODE, MAX_TRADE_PCT, MIN_TRADE_SOL, MAX_OPEN_COPIES,
+    STOP_LOSS_PCT, MIN_RESERVE_SOL, MAX_PRICE_IMPACT, SCALING_TIERS,
     TOKENS,
 )
 from utils.jupiter import get_quote, get_swap_transaction, calc_price_impact, out_amount
@@ -34,6 +35,63 @@ LAMPORTS_PER_SOL = 1_000_000_000
 
 # Tracking en memoria de posiciones abiertas: {token_mint: {"symbol": str, "opened": float}}
 _open_copies: dict[str, dict] = {}
+
+# Balance inicial de SOL (lamports) — se registra en el primer trade en vivo
+_initial_balance: int = 0
+
+
+def _ensure_initial_balance():
+    """Registra el balance inicial una sola vez, al primer trade en vivo."""
+    global _initial_balance
+    if _initial_balance == 0 and WALLET_PUBKEY:
+        bal = get_our_sol_balance()
+        if bal > 0:
+            _initial_balance = bal
+            log.info(
+                f"[CAPITAL] Balance inicial registrado: "
+                f"[bold white]{bal / LAMPORTS_PER_SOL:.4f} SOL[/] | "
+                f"Stop-loss activo si cae bajo "
+                f"[bold red]{bal * STOP_LOSS_PCT / LAMPORTS_PER_SOL:.4f} SOL[/] "
+                f"({STOP_LOSS_PCT*100:.0f}%)"
+            )
+
+
+def _is_stop_loss_triggered(current_balance: int) -> bool:
+    """Retorna True si el balance cayó por debajo del umbral de stop-loss."""
+    if _initial_balance == 0:
+        return False
+    threshold = int(_initial_balance * STOP_LOSS_PCT)
+    if current_balance < threshold:
+        log.warning(
+            f"[bold red][STOP-LOSS ACTIVO][/] Balance "
+            f"{current_balance / LAMPORTS_PER_SOL:.4f} SOL < "
+            f"umbral {threshold / LAMPORTS_PER_SOL:.4f} SOL — "
+            f"trading pausado para proteger capital"
+        )
+        return True
+    return False
+
+
+def _get_dynamic_trade_pct(current_balance: int) -> float:
+    """
+    Retorna el % máximo por trade según la ganancia acumulada sobre el capital inicial.
+    Cuanto más ganás, el techo por trade sube — pero siempre usando las ganancias,
+    no el capital base de $20.
+    """
+    if _initial_balance == 0:
+        return MAX_TRADE_PCT
+    profit_pct = (current_balance - _initial_balance) / _initial_balance
+    # Recorrer tiers de mayor a menor y devolver el primero que aplique
+    for min_profit, trade_pct in reversed(SCALING_TIERS):
+        if profit_pct >= min_profit:
+            if trade_pct > MAX_TRADE_PCT:
+                log.info(
+                    f"[ESCALADO] Ganancia acumulada: [green]{profit_pct*100:+.1f}%[/] → "
+                    f"techo por trade: [bold white]{trade_pct*100:.0f}%[/] "
+                    f"(base era {MAX_TRADE_PCT*100:.0f}%)"
+                )
+            return trade_pct
+    return MAX_TRADE_PCT
 
 
 # ── Persistencia ─────────────────────────────────────────────────────────────
@@ -107,14 +165,17 @@ def calc_proportional_amount(swap: dict, our_balance_lamports: int) -> int | Non
     """
     wallet_pre_sol = swap.get("wallet_pre_sol", 0)
 
+    # Techo dinámico: sube si hay ganancias acumuladas
+    dynamic_max = _get_dynamic_trade_pct(our_balance_lamports)
+
     if not PROPORTIONAL_MODE or wallet_pre_sol <= 0:
-        # Fallback: 5% fijo de nuestro balance
-        proportion = 0.05
+        # Fallback: usar el techo dinámico actual
+        proportion = dynamic_max
     else:
         # Proporción real: cuánto % de su balance metió la wallet
         amount_in_sol = swap["amount_in"]  # lamports de SOL (token_in = SOL)
         proportion    = amount_in_sol / wallet_pre_sol
-        proportion    = min(proportion, MAX_TRADE_PCT)  # tope de seguridad
+        proportion    = min(proportion, dynamic_max)  # tope dinámico
 
     our_amount = int(our_balance_lamports * proportion)
 
@@ -175,9 +236,32 @@ def execute_copy(swap: dict) -> bool:
             log.error("No se pudo obtener balance SOL propio.")
             return False
 
+        # Registrar capital inicial (sólo la primera vez)
+        _ensure_initial_balance()
+
+        # Stop-loss global: parar si perdimos demasiado
+        if _is_stop_loss_triggered(our_balance):
+            return False
+
         amount_lamports = calc_proportional_amount(swap, our_balance)
         if amount_lamports is None:
             return False
+
+        # Reserva mínima: nunca dejar el balance por debajo de MIN_RESERVE_SOL
+        min_reserve_lamports = int(MIN_RESERVE_SOL * LAMPORTS_PER_SOL)
+        available_lamports = our_balance - min_reserve_lamports
+        if available_lamports <= 0:
+            log.warning(
+                f"[{label}] Balance ({our_balance / LAMPORTS_PER_SOL:.4f} SOL) "
+                f"no supera la reserva mínima ({MIN_RESERVE_SOL} SOL) — ignorando"
+            )
+            return False
+        if amount_lamports > available_lamports:
+            log.info(
+                f"[{label}] Monto reducido de {amount_lamports / LAMPORTS_PER_SOL:.4f} "
+                f"a {available_lamports / LAMPORTS_PER_SOL:.4f} SOL para respetar reserva mínima"
+            )
+            amount_lamports = available_lamports
 
         proportion_pct = amount_lamports / our_balance * 100
         log.info(
@@ -209,6 +293,8 @@ def execute_copy(swap: dict) -> bool:
             "simulated":    False,
         })
         log.info(f"[bold green]COPY BUY OK[/] — {swap['symbol_out']} | TX: {sig}")
+        # Alimentar el simulador en vivo para acumular datos de aprendizaje
+        simulator.process(swap)
         return True
 
     # ── Venta ────────────────────────────────────────────────────────────────
@@ -253,6 +339,8 @@ def execute_copy(swap: dict) -> bool:
             "simulated":    False,
         })
         log.info(f"[bold green]COPY SELL OK[/] — {swap['symbol_in']} | Hold: {hold_min:.1f} min | TX: {sig}")
+        # Alimentar el simulador en vivo para acumular datos de aprendizaje
+        simulator.process(swap)
         return True
 
     else:
@@ -271,8 +359,8 @@ def _send_swap(token_in: str, token_out: str, amount: int, keypair: Keypair) -> 
         return None
 
     impact = calc_price_impact(quote)
-    if impact > 3.0:
-        log.warning(f"Price impact muy alto ({impact:.2f}%) — abortando.")
+    if impact > MAX_PRICE_IMPACT:
+        log.warning(f"Price impact muy alto ({impact:.2f}% > {MAX_PRICE_IMPACT}%) — abortando.")
         return None
 
     swap_tx_b64 = get_swap_transaction(quote, WALLET_PUBKEY)
