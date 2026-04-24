@@ -231,6 +231,20 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str):
         log.debug(f"[SIM] Venta de {symbol} sin posición abierta — ignorando")
         return
 
+    hold_min = (time.time() - pos["opened_at"]) / 60
+
+    # Trades < 30s son imposibles de copiar en la práctica — wallet compró y vendió
+    # antes de que pudiéramos ejecutar el buy. No contar como win ni como loss.
+    MIN_HOLD_SECONDS = float(os.getenv("MIN_HOLD_SECONDS", "30"))
+    if hold_min * 60 < MIN_HOLD_SECONDS:
+        log.info(
+            f"[SIM] ⏩ SKIP | [cyan]{label}[/] vendió [yellow]{symbol}[/] en "
+            f"[white]{hold_min*60:.0f}s[/] — demasiado rápido para copiar (mín {MIN_HOLD_SECONDS:.0f}s)"
+        )
+        _positions.setdefault(wallet, {})[token_mint] = pos
+        _save_positions()
+        return
+
     price_exit = _get_price(token_mint)
     if not price_exit:
         log.debug(f"[SIM] No hay precio de salida para {symbol} — no se cierra")
@@ -241,7 +255,6 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str):
     amount_usd = pos["amount_usd"]
     pnl_pct    = (price_exit - entry) / entry * 100
     pnl_usd    = amount_usd * pnl_pct / 100
-    hold_min   = (time.time() - pos["opened_at"]) / 60
     won        = pnl_pct > 0
 
     # Actualizar balance compuesto
@@ -259,10 +272,10 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str):
         "wallet_label":    label,
         "entry_price":     entry,
         "exit_price":      price_exit,
-        "pnl_pct":         round(pnl_pct,       2),
-        "pnl_usd":         round(pnl_usd,        2),
-        "amount_usd":      round(amount_usd,     4),
-        "hold_min":        round(hold_min,        1),
+        "pnl_pct":         round(pnl_pct,    2),
+        "pnl_usd":         round(pnl_usd,    2),
+        "amount_usd":      round(amount_usd, 4),
+        "hold_min":        round(hold_min,   1),
         "won":             won,
         "balance_before":  round(balance_before, 4),
         "balance_after":   round(_sim_balance,   4),
