@@ -25,7 +25,7 @@ from rich.align  import Align
 from rich.rule   import Rule
 from rich        import box
 
-from config import TARGET_WALLETS, WALLET_PUBKEY
+from config import TARGET_WALLETS, WALLET_PUBKEY, WALLET_LABELS
 from copytrade.watcher import watch
 from copytrade.learner import print_insights as print_learner_insights, load_rules
 from utils.logger import get_logger, console
@@ -57,12 +57,13 @@ def _print_wallets_panel():
         expand=True,
         padding=(0, 1),
     )
-    table.add_column("#",       style="dim white",  width=4,  justify="right")
-    table.add_column("Wallet",  style="bold cyan",  width=50)
-    table.add_column("Corta",   style="dim white",  width=16)
+    table.add_column("#",       style="dim white",   width=4,  justify="right")
+    table.add_column("Nombre",  style="bold yellow", width=14)
+    table.add_column("Wallet",  style="bold cyan",   width=46)
 
     for i, w in enumerate(TARGET_WALLETS, 1):
-        table.add_row(str(i), w, f"{w[:8]}...{w[-4:]}")
+        nombre = WALLET_LABELS.get(w, f"{w[:8]}...{w[-4:]}")
+        table.add_row(str(i), nombre, w)
 
     mode = (
         Text(" ◉ SIMULACIÓN ", style="bold black on yellow")
