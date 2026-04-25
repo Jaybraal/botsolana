@@ -99,19 +99,23 @@ _sim_balance: float                      = _load_balance()
 
 # ── Capital dinámico ──────────────────────────────────────────────────────────
 
+SIM_MAX_TRADE_PCT = float(os.getenv("SIM_MAX_TRADE_PCT", "0.10"))
+
+
 def _get_trade_pct() -> float:
     """
     Devuelve el % del balance a usar en el próximo trade.
-    Usa los mismos SCALING_TIERS que el executor real:
-    más ganancia acumulada → techo de trade más alto.
+    Usa los mismos SCALING_TIERS que el executor real pero
+    con techo fijo SIM_MAX_TRADE_PCT para que la simulación
+    sea realista respecto al capital real ($20).
     """
     if SIM_INITIAL_CAPITAL <= 0:
         return SIM_TRADE_PCT
     profit_pct = (_sim_balance - SIM_INITIAL_CAPITAL) / SIM_INITIAL_CAPITAL
     for min_profit, trade_pct in reversed(SCALING_TIERS):
         if profit_pct >= min_profit:
-            return trade_pct
-    return SIM_TRADE_PCT
+            return min(trade_pct, SIM_MAX_TRADE_PCT)
+    return min(SIM_TRADE_PCT, SIM_MAX_TRADE_PCT)
 
 
 def _get_trade_amount() -> float:
@@ -177,6 +181,10 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str):
         log.debug(f"[SIM] Trade amount ${trade_amount:.2f} < mínimo ${SIM_MIN_TRADE} — ignorando")
         return
 
+    # Registrar tiempo de detección ANTES de cualquier HTTP para que el SKIP
+    # refleje el tiempo real desde que la wallet ejecutó el swap.
+    detected_at = time.time()
+
     price = _get_price(token_mint)
     if not price:
         log.debug(f"[SIM] No hay precio para {symbol} — no se abre posición")
@@ -190,7 +198,7 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str):
         "symbol":        symbol,
         "entry_price":   price,
         "amount_usd":    round(trade_amount, 4),
-        "opened_at":     time.time(),
+        "opened_at":     detected_at,
         "opened_str":    datetime.now().strftime("%H:%M:%S %d/%m"),
         "wallet":        wallet,
         "wallet_label":  label,

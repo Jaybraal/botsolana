@@ -21,6 +21,10 @@ WALLET_LABELS: dict[str, str] = {
     "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9": "Decu",
     "DuQabFqdC9eeBULVa7TTdZYxe8vK8ct5DZr4Xcf7docy": "Orange",
     "7SDs3PjT2mswKQ7Zo4FTucn9gJdtuW4jaacPA65BseHS": "Insentos",
+    # wallets de prueba añadidas para evaluación
+    "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK":  "Cupsey-Test",
+    "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o": "Rename",
+    "831yhv67QpKqLBJjbmw2xoDUeeFHGUx8RnuRj9imeoEs": "Trey",
 }
 
 # --- Config del bot (copy trade) ---
