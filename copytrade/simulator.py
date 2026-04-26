@@ -92,7 +92,7 @@ def _save_balance():
 
 # ── Estado en memoria ─────────────────────────────────────────────────────────
 
-_positions:   dict[str, dict[str, dict]] = _load_positions()
+_positions:   dict[str, dict] = _load_positions()  # {token_mint: position}
 _history:     list[dict]                 = _load_history()
 _sim_balance: float                      = _load_balance()
 
@@ -152,20 +152,22 @@ def process(swap: dict):
     is_buy  = token_in  in STABLE_MINTS and token_out not in STABLE_MINTS
     is_sell = token_out in STABLE_MINTS and token_in  not in STABLE_MINTS
 
+    wallet_buy_time = swap.get("wallet_buy_time")
+
     if is_buy:
-        _handle_buy(wallet, wallet_label, token_out, symbol_out)
+        _handle_buy(wallet, wallet_label, token_out, symbol_out, wallet_buy_time)
     elif is_sell:
         _handle_sell(wallet, wallet_label, token_in, symbol_in)
 
 
 # ── Compra ────────────────────────────────────────────────────────────────────
 
-def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str):
+def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str, wallet_buy_time: float | None = None):
     """Abre posición simulada al precio actual usando % del balance."""
     global _sim_balance
 
-    # Ya tenemos posición en este token para esta wallet
-    if _positions.get(wallet, {}).get(token_mint):
+    # Ya tenemos posición en este token (cualquier wallet) — igual que el executor real
+    if _positions.get(token_mint):
         return
 
     # Balance demasiado bajo — simular liquidación
@@ -181,9 +183,10 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str):
         log.debug(f"[SIM] Trade amount ${trade_amount:.2f} < mínimo ${SIM_MIN_TRADE} — ignorando")
         return
 
-    # Registrar tiempo de detección ANTES de cualquier HTTP para que el SKIP
-    # refleje el tiempo real desde que la wallet ejecutó el swap.
     detected_at = time.time()
+    # Usar blockTime del bloque real como referencia del hold — mide desde cuando la wallet compró
+    opened_at = wallet_buy_time if wallet_buy_time else detected_at
+    latency_s = detected_at - opened_at if wallet_buy_time else 0
 
     price = _get_price(token_mint)
     if not price:
@@ -194,18 +197,19 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str):
     tier_pct      = _get_trade_pct()
 
     pos = {
-        "token_mint":    token_mint,
-        "symbol":        symbol,
-        "entry_price":   price,
-        "amount_usd":    round(trade_amount, 4),
-        "opened_at":     detected_at,
-        "opened_str":    datetime.now().strftime("%H:%M:%S %d/%m"),
-        "wallet":        wallet,
-        "wallet_label":  label,
-        "entry_context": entry_context,
+        "token_mint":      token_mint,
+        "symbol":          symbol,
+        "entry_price":     price,
+        "amount_usd":      round(trade_amount, 4),
+        "opened_at":       opened_at,
+        "opened_str":      datetime.now().strftime("%H:%M:%S %d/%m"),
+        "wallet":          wallet,
+        "wallet_label":    label,
+        "entry_context":   entry_context,
+        "detection_delay": round(latency_s, 1),
     }
 
-    _positions.setdefault(wallet, {})[token_mint] = pos
+    _positions[token_mint] = pos
     _save_positions()
 
     ctx_str = ""
@@ -219,12 +223,13 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str):
             f" | 1h [white]{ch1h:+.1f}%[/]"
         )
 
+    latency_str = f" | delay [white]{latency_s:.0f}s[/]" if latency_s > 0.5 else ""
     profit_pct = (_sim_balance - SIM_INITIAL_CAPITAL) / SIM_INITIAL_CAPITAL * 100
     log.info(
         f"[SIM] 📥 ENTRADA | [cyan]{label}[/] compró [yellow]{symbol}[/] | "
         f"precio: [white]${price:.8f}[/] | "
         f"trade: [green]${trade_amount:.2f}[/] ({tier_pct*100:.0f}% de ${_sim_balance:.2f})"
-        f"{ctx_str}"
+        f"{ctx_str}{latency_str}"
     )
 
 
@@ -234,29 +239,18 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str):
     """Cierra posición simulada, actualiza balance y calcula P&L."""
     global _sim_balance
 
-    pos = _positions.get(wallet, {}).pop(token_mint, None)
+    pos = _positions.pop(token_mint, None)
     if not pos:
         log.debug(f"[SIM] Venta de {symbol} sin posición abierta — ignorando")
         return
 
-    hold_min = (time.time() - pos["opened_at"]) / 60
-
-    # Trades < 30s son imposibles de copiar en la práctica — wallet compró y vendió
-    # antes de que pudiéramos ejecutar el buy. No contar como win ni como loss.
-    MIN_HOLD_SECONDS = float(os.getenv("MIN_HOLD_SECONDS", "30"))
-    if hold_min * 60 < MIN_HOLD_SECONDS:
-        log.info(
-            f"[SIM] ⏩ SKIP | [cyan]{label}[/] vendió [yellow]{symbol}[/] en "
-            f"[white]{hold_min*60:.0f}s[/] — demasiado rápido para copiar (mín {MIN_HOLD_SECONDS:.0f}s)"
-        )
-        _positions.setdefault(wallet, {})[token_mint] = pos
-        _save_positions()
-        return
+    hold_sec = time.time() - pos["opened_at"]
+    hold_min = hold_sec / 60
 
     price_exit = _get_price(token_mint)
     if not price_exit:
         log.debug(f"[SIM] No hay precio de salida para {symbol} — no se cierra")
-        _positions.setdefault(wallet, {})[token_mint] = pos
+        _positions[token_mint] = pos
         return
 
     entry      = pos["entry_price"]
@@ -345,7 +339,7 @@ def _print_summary():
 def get_summary() -> dict:
     wins      = [t for t in _history if t["won"]]
     pnl_total = _sim_balance - SIM_INITIAL_CAPITAL
-    open_pos  = sum(len(v) for v in _positions.values())
+    open_pos  = len(_positions)
     return {
         "total_trades":    len(_history),
         "wins":            len(wins),
