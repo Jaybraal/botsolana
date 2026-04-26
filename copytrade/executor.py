@@ -10,9 +10,11 @@ import time
 import httpx
 from datetime import datetime
 from solders.keypair import Keypair
+from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
+from solders.message import MessageV0, Message
 from solana.rpc.api import Client
-from solana.rpc.types import TokenAccountOpts
+from solana.rpc.types import TokenAccountOpts, TxOpts
 
 from config import (
     RPC_HTTP, WALLET_PUBKEY, WALLET_PRIVKEY, SLIPPAGE_BPS,
@@ -21,6 +23,7 @@ from config import (
     TOKENS,
 )
 from utils.jupiter import get_quote, get_swap_transaction, calc_price_impact, out_amount
+from utils.pumpfun import get_pump_buy_tx, get_pump_sell_tx
 from utils.logger import get_logger
 from copytrade import simulator
 
@@ -28,7 +31,8 @@ log    = get_logger("executor")
 client = Client(RPC_HTTP)
 
 os.makedirs("data", exist_ok=True)
-COPYTRADES_FILE = "data/copytrades.json"
+COPYTRADES_FILE  = "data/copytrades.json"
+DEAD_TOKENS_FILE = "data/dead_tokens.json"
 
 SOL_MINT     = TOKENS["SOL"]
 LAMPORTS_PER_SOL = 1_000_000_000
@@ -38,6 +42,94 @@ _open_copies: dict[str, dict] = {}
 
 # Balance inicial de SOL (lamports) — se registra en el primer trade en vivo
 _initial_balance: int = 0
+
+# Tokens confirmados como irrecuperables (rugged, sin liquidez) — persistido en disco
+_dead_tokens: set[str] = set()
+
+
+def _load_dead_tokens():
+    global _dead_tokens
+    if os.path.exists(DEAD_TOKENS_FILE):
+        try:
+            with open(DEAD_TOKENS_FILE) as f:
+                _dead_tokens = set(json.load(f))
+        except Exception:
+            _dead_tokens = set()
+
+def _save_dead_token(mint: str, symbol: str):
+    _dead_tokens.add(mint)
+    try:
+        with open(DEAD_TOKENS_FILE, "w") as f:
+            json.dump(list(_dead_tokens), f)
+        log.warning(f"[DEAD] {symbol} ({mint[:8]}...) marcado como irrecuperable — se ignorará en próximos reinicios")
+    except Exception:
+        pass
+
+def _active_positions_count() -> int:
+    """Cuenta solo posiciones abiertas activas (excluye recuperadas pendientes de señal)."""
+    return sum(1 for v in _open_copies.values() if not v.get("recovered"))
+
+_load_dead_tokens()
+
+
+def recover_open_positions():
+    """
+    Al arrancar, escanea la wallet para detectar tokens no-SOL que ya tengamos.
+    Intenta venderlos inmediatamente — si las wallets ya salieron, no llegará señal natural.
+    Tokens que fallan TODAS las rutas de venta se marcan como irrecuperables en disco
+    y se ignorarán en futuros reinicios (evita bloquear slots indefinidamente).
+    """
+    if not WALLET_PUBKEY:
+        return
+    keypair = load_keypair()
+    try:
+        from solana.rpc.types import TokenAccountOpts
+        opts = TokenAccountOpts(program_id=Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"))
+        resp = client.get_token_accounts_by_owner_json_parsed(Pubkey.from_string(WALLET_PUBKEY), opts)
+        DUST_THRESHOLD = 1_000_000
+        recovered = 0
+        for acc in resp.value:
+            info      = acc.account.data.parsed["info"]
+            mint      = info["mint"]
+            tok       = info["tokenAmount"]
+            raw_amt   = int(tok["amount"])
+            ui_amt    = float(tok.get("uiAmount") or 0)
+            if raw_amt < DUST_THRESHOLD:
+                continue
+            symbol = mint[:6]
+
+            # Token ya marcado como irrecuperable en sesiones anteriores — ignorar
+            if mint in _dead_tokens:
+                log.debug(f"[RECOVER] {symbol} ya marcado como irrecuperable — ignorando")
+                continue
+
+            log.info(f"[RECOVER] Token encontrado: {symbol} ({mint[:8]}...) — {ui_amt:.4f} tokens — intentando vender...")
+
+            # Intentar vender inmediatamente (wallets ya pudieron haber salido)
+            sig = None
+            if keypair:
+                sig = _send_pumpfun_sell(mint, ui_amt, keypair, pool="pump")
+                if not sig:
+                    sig = _send_pumpfun_sell(mint, ui_amt, keypair, pool="pumpswap")
+                if not sig:
+                    sig = _send_swap(mint, SOL_MINT, raw_amt, keypair)
+
+            if sig:
+                log.info(f"[RECOVER] ✅ Vendido {symbol} al arrancar | TX: {sig[:20]}...")
+            else:
+                # Todas las rutas fallaron — muy probablemente token rugged/sin liquidez
+                # Marcarlo como muerto para no volver a intentar en próximos reinicios
+                _save_dead_token(mint, symbol)
+                # Registrarlo en _open_copies como recuperado (sin contar en slots activos)
+                # por si acaso llegara señal de venta natural
+                _open_copies[mint] = {"symbol": symbol, "opened": time.time(), "recovered": True}
+                log.warning(f"[RECOVER] ⚠️  No se pudo vender {symbol} — marcado como irrecuperable")
+                recovered += 1
+
+        if recovered:
+            log.info(f"[RECOVER] {recovered} token(s) irrecuperables — NO bloquean slots de trading")
+    except Exception as e:
+        log.warning(f"[RECOVER] Error escaneando posiciones: {e}")
 
 
 def _ensure_initial_balance():
@@ -127,64 +219,56 @@ def get_our_sol_balance() -> int:
     if not WALLET_PUBKEY:
         return 0
     try:
-        resp = client.get_balance(WALLET_PUBKEY)
+        resp = client.get_balance(Pubkey.from_string(WALLET_PUBKEY))
         return resp.value
     except Exception as e:
         log.error(f"Error obteniendo balance SOL: {e}")
         return 0
 
 
-def get_our_token_balance(mint: str) -> int:
-    """Retorna nuestro balance de un token en unidades mínimas, o 0 si no tenemos."""
+def get_our_token_balance(mint: str) -> tuple[int, float]:
+    """
+    Retorna (raw_amount, ui_amount) de un token en nuestra wallet.
+    raw_amount: unidades mínimas (para Jupiter)
+    ui_amount:  amount con decimales aplicados (para PumpPortal)
+    Retorna (0, 0.0) si no tenemos el token.
+    """
     if not WALLET_PUBKEY:
-        return 0
+        return 0, 0.0
     try:
-        opts = TokenAccountOpts(mint=mint)
-        resp = client.get_token_accounts_by_owner_json_parsed(WALLET_PUBKEY, opts)
+        opts = TokenAccountOpts(mint=Pubkey.from_string(mint))
+        resp = client.get_token_accounts_by_owner_json_parsed(Pubkey.from_string(WALLET_PUBKEY), opts)
         accounts = resp.value
         if not accounts:
-            return 0
-        total = 0
+            return 0, 0.0
+        raw_total = 0
+        ui_total  = 0.0
         for acc in accounts:
             info = acc.account.data.parsed["info"]["tokenAmount"]
-            total += int(info["amount"])
-        return total
+            raw_total += int(info["amount"])
+            ui_total  += float(info.get("uiAmount") or 0)
+        return raw_total, ui_total
     except Exception as e:
         log.error(f"Error obteniendo balance token {mint[:8]}...: {e}")
-        return 0
+        return 0, 0.0
 
 
 # ── Cálculo de monto proporcional ────────────────────────────────────────────
 
 def calc_proportional_amount(swap: dict, our_balance_lamports: int) -> int | None:
     """
-    Calcula cuántos lamports de SOL invertir, proporcional a lo que invirtió la wallet.
-
-    Retorna lamports a invertir, o None si no se debe operar
-    (mínimo no alcanzado, máximo de posiciones, etc.).
+    Calcula cuántos lamports de SOL invertir usando % fijo del balance propio.
+    El % sube progresivamente con las ganancias acumuladas (SCALING_TIERS).
+    No usa el capital de la wallet copiada para evitar trades microscópicos.
     """
-    wallet_pre_sol = swap.get("wallet_pre_sol", 0)
+    dynamic_pct = _get_dynamic_trade_pct(our_balance_lamports)
+    our_amount  = int(our_balance_lamports * dynamic_pct)
 
-    # Techo dinámico: sube si hay ganancias acumuladas
-    dynamic_max = _get_dynamic_trade_pct(our_balance_lamports)
-
-    if not PROPORTIONAL_MODE or wallet_pre_sol <= 0:
-        # Fallback: usar el techo dinámico actual
-        proportion = dynamic_max
-    else:
-        # Proporción real: cuánto % de su balance metió la wallet
-        amount_in_sol = swap["amount_in"]  # lamports de SOL (token_in = SOL)
-        proportion    = amount_in_sol / wallet_pre_sol
-        proportion    = min(proportion, dynamic_max)  # tope dinámico
-
-    our_amount = int(our_balance_lamports * proportion)
-
-    # Mínimo absoluto
     min_lamports = int(MIN_TRADE_SOL * LAMPORTS_PER_SOL)
     if our_amount < min_lamports:
         log.warning(
-            f"Trade proporcional muy pequeño ({our_amount / LAMPORTS_PER_SOL:.5f} SOL < "
-            f"{MIN_TRADE_SOL} SOL mínimo) — ignorando"
+            f"Monto calculado ({our_amount / LAMPORTS_PER_SOL:.6f} SOL) "
+            f"por debajo del mínimo ({MIN_TRADE_SOL} SOL) — ignorando"
         )
         return None
 
@@ -218,10 +302,11 @@ def execute_copy(swap: dict) -> bool:
     if is_buy:
         token_out = swap["token_out"]
 
-        # No abrir más posiciones si ya estamos al límite
-        if len(_open_copies) >= MAX_OPEN_COPIES:
+        # No abrir más posiciones si ya estamos al límite (tokens recuperados no cuentan)
+        active_count = _active_positions_count()
+        if active_count >= MAX_OPEN_COPIES:
             log.warning(
-                f"[{label}] Límite de {MAX_OPEN_COPIES} posiciones abiertas alcanzado — "
+                f"[{label}] Límite de {MAX_OPEN_COPIES} posiciones activas alcanzado — "
                 f"ignorando compra de {swap['symbol_out']}"
             )
             return False
@@ -271,11 +356,28 @@ def execute_copy(swap: dict) -> bool:
             f"Balance: {our_balance / LAMPORTS_PER_SOL:.3f} SOL"
         )
 
-        sig = _send_swap(swap["token_in"], token_out, amount_lamports, keypair)
+        is_pumpfun_bc  = swap.get("program") == "Pump.fun"
+        is_pumpswap    = swap.get("program") == "PumpSwap"
+        sig = None
+        if is_pumpfun_bc:
+            # Bonding curve: PumpPortal directo
+            log.info(f"[{label}] Bonding curve — usando PumpPortal (pump) para {swap['symbol_out']}")
+            sig = _send_pumpfun_buy(token_out, amount_lamports, keypair)
+        elif is_pumpswap:
+            # PumpSwap AMM: Jupiter primero, luego PumpPortal pumpswap como fallback
+            sig = _send_swap(swap["token_in"], token_out, amount_lamports, keypair)
+            if not sig:
+                log.info(f"[{label}] Jupiter falló — intentando PumpPortal (pumpswap) para {swap['symbol_out']}")
+                sig = _send_pumpfun_buy_pumpswap(token_out, amount_lamports, keypair)
+        else:
+            # Jupiter/Raydium/Orca
+            sig = _send_swap(swap["token_in"], token_out, amount_lamports, keypair)
+
         if not sig:
+            log.warning(f"[{label}] No se pudo ejecutar buy — {swap['symbol_out']} (programa: {swap.get('program','')})")
             return False
 
-        _open_copies[token_out] = {"symbol": swap["symbol_out"], "opened": time.time()}
+        _open_copies[token_out] = {"symbol": swap["symbol_out"], "opened": time.time(), "program": swap.get("program", "")}
         _append_copytrade({
             "timestamp":    time.time(),
             "time_str":     datetime.now().strftime("%H:%M:%S %d/%m"),
@@ -306,19 +408,64 @@ def execute_copy(swap: dict) -> bool:
             log.debug(f"[{label}] Venta de {swap['symbol_in']} ignorada — no tenemos posición abierta")
             return False
 
-        our_token_balance = get_our_token_balance(token_in)
-        if our_token_balance == 0:
+        # Filtro de tiempo mínimo: no vender si llevamos menos de MIN_HOLD_SECONDS en posición.
+        # Evita copiar scalping ultrarrápido donde llegamos tarde y las fees se comen la ganancia.
+        opened_at   = _open_copies[token_in].get("opened", 0)
+        our_hold    = time.time() - opened_at
+        min_hold_s  = float(os.getenv("MIN_HOLD_SECONDS", "60"))
+        if our_hold < min_hold_s:
+            log.warning(
+                f"[{label}] Venta de {swap['symbol_in']} ignorada — "
+                f"solo llevamos {our_hold:.0f}s en posición (mín {min_hold_s:.0f}s)"
+            )
+            return False
+
+        raw_balance, ui_balance = get_our_token_balance(token_in)
+        if raw_balance == 0:
+            # El nodo RPC puede tardar varios segundos en reflejar una cuenta recién creada.
+            # Reintentar hasta 5 veces con 3s de pausa si la posición lleva < 60s abierta.
+            opened_at = _open_copies[token_in].get("opened", 0)
+            if time.time() - opened_at < 60:
+                for _attempt in range(5):
+                    time.sleep(3)
+                    raw_balance, ui_balance = get_our_token_balance(token_in)
+                    if raw_balance > 0:
+                        log.info(f"[{label}] Balance visible tras {(_attempt+1)*3}s de espera — {ui_balance:.4f} tokens")
+                        break
+        if raw_balance == 0:
             log.warning(f"[{label}] Venta de {swap['symbol_in']} — balance propio es 0, nada que vender")
             _open_copies.pop(token_in, None)
             return False
 
         log.info(
             f"[COPY SELL] [bold cyan]{label}[/] | {swap['symbol_in']}→SOL | "
-            f"Vendiendo todo: {our_token_balance} unidades"
+            f"Vendiendo todo: {ui_balance:.4f} tokens ({raw_balance} raw)"
         )
 
-        sig = _send_swap(token_in, SOL_MINT, our_token_balance, keypair)
+        # Usar el programa con el que NOSOTROS compramos (no el del target al vender)
+        # para decidir la ruta de venta más adecuada.
+        buy_program   = _open_copies[token_in].get("program", swap.get("program", ""))
+        is_pumpfun_bc = buy_program == "Pump.fun"
+        sig = None
+        if is_pumpfun_bc:
+            # Token de Pump.fun: probar BC → PumpSwap AMM → Jupiter
+            log.info(f"[{label}] Intentando PumpPortal (pump) — {ui_balance:.4f} tokens")
+            sig = _send_pumpfun_sell(token_in, ui_balance, keypair, pool="pump")
+            if not sig:
+                log.info(f"[{label}] Intentando PumpPortal (pumpswap) — token graduado?")
+                sig = _send_pumpfun_sell(token_in, ui_balance, keypair, pool="pumpswap")
+            if not sig:
+                log.info(f"[{label}] Intentando Jupiter como último recurso...")
+                sig = _send_swap(token_in, SOL_MINT, raw_balance, keypair)
+        else:
+            # Token de Jupiter/Raydium/Orca: Jupiter → PumpSwap como fallback
+            sig = _send_swap(token_in, SOL_MINT, raw_balance, keypair)
+            if not sig:
+                log.info(f"[{label}] Jupiter falló — intentando PumpPortal (pumpswap)...")
+                sig = _send_pumpfun_sell(token_in, ui_balance, keypair, pool="pumpswap")
+
         if not sig:
+            log.warning(f"[{label}] Sell falló (pump + pumpswap + Jupiter) — {swap['symbol_in']} — posición queda abierta")
             return False
 
         pos = _open_copies.pop(token_in, {})
@@ -372,12 +519,102 @@ def _send_swap(token_in: str, token_out: str, amount: int, keypair: Keypair) -> 
         raw_bytes = base64.b64decode(swap_tx_b64)
         tx        = VersionedTransaction.from_bytes(raw_bytes)
         tx_signed = VersionedTransaction(tx.message, [keypair])
-        resp      = client.send_raw_transaction(bytes(tx_signed))
-        sig       = str(resp.value)
-        conf      = client.confirm_transaction(resp.value, commitment="confirmed")
+        resp      = client.send_raw_transaction(
+            bytes(tx_signed),
+            opts=TxOpts(skip_preflight=False, preflight_commitment="confirmed"),
+        )
+        sig  = str(resp.value)
+        conf = client.confirm_transaction(resp.value, commitment="confirmed")
         return sig if conf.value else None
     except Exception as e:
-        log.error(f"Error enviando TX: {e}")
+        log.error(f"Error enviando TX Jupiter: {e}")
+        return None
+
+
+# ── Enviar swap via PumpPortal (bonding curve) ────────────────────────────────
+
+def _send_pumpfun_buy(mint: str, amount_lamports: int, keypair: Keypair) -> str | None:
+    """Compra via PumpPortal en la bonding curve. Retorna signature o None."""
+    amount_sol = amount_lamports / LAMPORTS_PER_SOL
+    tx_bytes = get_pump_buy_tx(WALLET_PUBKEY, mint, amount_sol)
+    if not tx_bytes:
+        return None
+    return _sign_and_send(tx_bytes, keypair, f"PumpPortal buy {mint[:8]}...")
+
+
+def _send_pumpfun_buy_pumpswap(mint: str, amount_lamports: int, keypair: Keypair) -> str | None:
+    """Compra via PumpPortal en PumpSwap AMM (token graduado). Retorna signature o None."""
+    from utils.pumpfun import get_pump_buy_tx as _buy_tx
+    amount_sol = amount_lamports / LAMPORTS_PER_SOL
+    payload = {
+        "publicKey":        WALLET_PUBKEY,
+        "action":           "buy",
+        "mint":             mint,
+        "denominatedInSol": "true",
+        "amount":           round(amount_sol, 6),
+        "slippage":         20,
+        "priorityFee":      0.0005,
+        "pool":             "pumpswap",
+    }
+    import httpx
+    try:
+        r = httpx.post("https://pumpportal.fun/api/trade-local", json=payload, timeout=15)
+        if r.status_code != 200 or not r.content:
+            log.warning(f"PumpPortal buy pumpswap HTTP {r.status_code}: {r.text[:150]}")
+            return None
+        return _sign_and_send(r.content, keypair, f"PumpPortal buy [pumpswap] {mint[:8]}...")
+    except Exception as e:
+        log.warning(f"PumpPortal buy pumpswap error: {e}")
+        return None
+
+
+def _send_pumpfun_sell(mint: str, ui_amount: float, keypair: Keypair, pool: str = "pump") -> str | None:
+    """Vende via PumpPortal. ui_amount en tokens con decimales (ej: 1234.56, NO raw units)."""
+    tx_bytes = get_pump_sell_tx(WALLET_PUBKEY, mint, ui_amount, pool=pool)
+    if not tx_bytes:
+        return None
+    return _sign_and_send(tx_bytes, keypair, f"PumpPortal sell [{pool}] {mint[:8]}...")
+
+
+def _sign_and_send(tx_bytes: bytes, keypair: Keypair, desc: str) -> str | None:
+    """Deserializa, reemplaza blockhash, firma y envía. Retorna signature o None."""
+    try:
+        tx = VersionedTransaction.from_bytes(tx_bytes)
+
+        # Obtener blockhash fresco — el de PumpPortal puede haber expirado (~60-90s de vida)
+        bh_resp    = client.get_latest_blockhash(commitment="confirmed")
+        fresh_bh   = bh_resp.value.blockhash
+
+        # Reconstruir mensaje con blockhash fresco (soporta V0 y legacy)
+        msg = tx.message
+        if isinstance(msg, MessageV0):
+            new_msg = MessageV0(
+                header=msg.header,
+                account_keys=list(msg.account_keys),
+                recent_blockhash=fresh_bh,
+                instructions=list(msg.instructions),
+                address_table_lookups=list(msg.address_table_lookups),
+            )
+        else:
+            new_msg = Message.new_with_blockhash(
+                msg.instructions,
+                keypair.pubkey(),
+                fresh_bh,
+            )
+
+        tx_signed = VersionedTransaction(new_msg, [keypair])
+        resp = client.send_raw_transaction(
+            bytes(tx_signed),
+            opts=TxOpts(skip_preflight=False, preflight_commitment="confirmed"),
+        )
+        sig  = str(resp.value)
+        conf = client.confirm_transaction(resp.value, commitment="confirmed")
+        if conf.value:
+            return sig
+        log.warning(f"[{desc}] TX enviada pero no confirmada: {sig[:16]}...")
+        return None
+    except Exception as e:
+        log.error(f"[{desc}] Error firmando/enviando TX: {e}")
         return None
 
 
