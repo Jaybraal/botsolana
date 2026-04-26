@@ -408,18 +408,6 @@ def execute_copy(swap: dict) -> bool:
             log.debug(f"[{label}] Venta de {swap['symbol_in']} ignorada — no tenemos posición abierta")
             return False
 
-        # Filtro de tiempo mínimo: no vender si llevamos menos de MIN_HOLD_SECONDS en posición.
-        # Evita copiar scalping ultrarrápido donde llegamos tarde y las fees se comen la ganancia.
-        opened_at   = _open_copies[token_in].get("opened", 0)
-        our_hold    = time.time() - opened_at
-        min_hold_s  = float(os.getenv("MIN_HOLD_SECONDS", "60"))
-        if our_hold < min_hold_s:
-            log.warning(
-                f"[{label}] Venta de {swap['symbol_in']} ignorada — "
-                f"solo llevamos {our_hold:.0f}s en posición (mín {min_hold_s:.0f}s)"
-            )
-            return False
-
         raw_balance, ui_balance = get_our_token_balance(token_in)
         if raw_balance == 0:
             # El nodo RPC puede tardar varios segundos en reflejar una cuenta recién creada.
