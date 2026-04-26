@@ -109,9 +109,11 @@ async def handle_message(msg: str):
         if not swap:
             return
 
-        # Añadir etiqueta de plataforma
+        # Solo procesar wallets que seguimos explícitamente
         wallet_addr = swap["wallet"]
-        label = WALLET_LABELS.get(wallet_addr, f"{wallet_addr[:8]}...")
+        if wallet_addr not in WALLET_LABELS:
+            return
+        label = WALLET_LABELS[wallet_addr]
         swap["wallet_label"] = label
 
         # Timestamp real del bloque — medir desde cuándo la wallet compró, no desde cuando detectamos

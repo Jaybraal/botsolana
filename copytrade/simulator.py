@@ -13,6 +13,24 @@ import json
 import os
 import time
 from datetime import datetime
+
+# Caché del precio de SOL en USD — se refresca cada 60s
+_sol_price_usd:       float = 0.0
+_sol_price_fetched_at: float = 0.0
+
+def _get_sol_price_usd() -> float:
+    global _sol_price_usd, _sol_price_fetched_at
+    if time.time() - _sol_price_fetched_at < 60 and _sol_price_usd > 0:
+        return _sol_price_usd
+    try:
+        from utils.dexscreener import get_best_pair
+        pair = get_best_pair("So11111111111111111111111111111111111111112")
+        if pair:
+            _sol_price_usd = float(pair.get("priceUsd") or 0)
+            _sol_price_fetched_at = time.time()
+    except Exception:
+        pass
+    return _sol_price_usd if _sol_price_usd > 0 else 150.0  # fallback conservador
 from utils.dexscreener import get_best_pair
 from utils.market_context import get_context
 from utils.logger import get_logger
@@ -154,15 +172,25 @@ def process(swap: dict):
 
     wallet_buy_time = swap.get("wallet_buy_time")
 
+    # Precio implícito desde el swap (fallback para tokens sin precio en DexScreener)
+    implied_price: float = 0.0
+    if is_buy and swap.get("amount_in", 0) > 0 and swap.get("amount_out", 0) > 0:
+        sol_amount    = swap["amount_in"] / 1_000_000_000          # lamports → SOL
+        token_amount  = swap["amount_out"] / 1_000_000             # asume 6 decimales (Pump.fun)
+        if token_amount > 0:
+            sol_price     = _get_sol_price_usd()
+            implied_price = (sol_amount / token_amount) * sol_price
+
     if is_buy:
-        _handle_buy(wallet, wallet_label, token_out, symbol_out, wallet_buy_time)
+        _handle_buy(wallet, wallet_label, token_out, symbol_out, wallet_buy_time, implied_price)
     elif is_sell:
         _handle_sell(wallet, wallet_label, token_in, symbol_in)
 
 
 # ── Compra ────────────────────────────────────────────────────────────────────
 
-def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str, wallet_buy_time: float | None = None):
+def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
+                wallet_buy_time: float | None = None, implied_price: float = 0.0):
     """Abre posición simulada al precio actual usando % del balance."""
     global _sim_balance
 
@@ -184,11 +212,11 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str, wallet_bu
         return
 
     detected_at = time.time()
-    # Usar blockTime del bloque real como referencia del hold — mide desde cuando la wallet compró
     opened_at = wallet_buy_time if wallet_buy_time else detected_at
     latency_s = detected_at - opened_at if wallet_buy_time else 0
 
-    price = _get_price(token_mint)
+    # Precio: DexScreener primero, precio implícito del swap como fallback
+    price = _get_price(token_mint) or implied_price
     if not price:
         log.debug(f"[SIM] No hay precio para {symbol} — no se abre posición")
         return

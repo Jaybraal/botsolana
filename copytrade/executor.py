@@ -609,16 +609,8 @@ def _sign_and_send(tx_bytes: bytes, keypair: Keypair, desc: str) -> str | None:
 # ── Simulación ────────────────────────────────────────────────────────────────
 
 def _simulate(swap: dict, label: str, is_buy: bool):
-    """Registra el swap en modo simulación y calcula la proporción teórica."""
-    wallet_pre_sol = swap.get("wallet_pre_sol", 0)
-
-    if is_buy and wallet_pre_sol > 0:
-        proportion = min(swap["amount_in"] / wallet_pre_sol, MAX_TRADE_PCT)
-        prop_str   = f"{proportion * 100:.1f}%"
-    else:
-        proportion = None
-        prop_str   = "—"
-
+    """Registra el swap en modo simulación."""
+    direction = "COMPRA" if is_buy else "VENTA"
     entry = {
         "timestamp":    time.time(),
         "time_str":     datetime.now().strftime("%H:%M:%S %d/%m"),
@@ -631,14 +623,12 @@ def _simulate(swap: dict, label: str, is_buy: bool):
         "token_in":     swap["token_in"],
         "token_out":    swap["token_out"],
         "amount_in":    swap["amount_in"],
-        "proportion":   prop_str,
         "simulated":    True,
     }
     _append_copytrade(entry)
     log.info(
-        f"[SIM] [bold cyan]{label}[/] | "
+        f"[SIM] [bold cyan]{label}[/] | {direction} | "
         f"[yellow]{swap['symbol_in']}[/] → [green]{swap['symbol_out']}[/] "
-        f"via [white]{swap['program']}[/] | "
-        f"Proporción: [white]{prop_str}[/]"
+        f"via [white]{swap['program']}[/]"
     )
     simulator.process(swap)
