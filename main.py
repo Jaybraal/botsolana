@@ -26,8 +26,9 @@ from rich.rule   import Rule
 from rich        import box
 
 from config import TARGET_WALLETS, WALLET_PUBKEY, WALLET_LABELS
-from copytrade.watcher import watch
+from copytrade.watcher import watch_all
 from copytrade.learner import print_insights as print_learner_insights, load_rules
+from copytrade.executor import recover_open_positions
 from utils.logger import get_logger, console
 import json, os
 
@@ -162,11 +163,15 @@ def main():
     if load_rules():
         print_learner_insights()
 
+    # Recuperar posiciones abiertas de reinicios previos
+    if WALLET_PUBKEY:
+        recover_open_positions()
+
     console.print(Rule("[dim]Conectando WebSocket...[/]", style="bright_black"))
     console.print()
 
     try:
-        asyncio.run(watch())
+        asyncio.run(watch_all())
     except KeyboardInterrupt:
         console.print()
         _print_copytrade_summary()
