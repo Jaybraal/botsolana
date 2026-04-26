@@ -216,29 +216,36 @@ def _pumpportal_to_swap(data: dict) -> dict | None:
     program      = "Pump.fun" if pool == "pump" else "PumpSwap"
     sol_lamports = int(sol_amount * 1_000_000_000)
 
+    # PumpPortal da tokenAmount en UI (no en unidades mínimas).
+    # Calculamos el precio implícito aquí donde tenemos los valores correctos.
+    # El simulador lo usará como fallback cuando DexScreener no tenga datos.
+    implied_price_sol = (sol_amount / token_amount) if token_amount > 0 else 0.0
+
     if tx_type == "buy":
         return {
-            "wallet":         wallet,
-            "program":        program,
-            "token_in":       SOL_MINT,
-            "token_out":      mint,
-            "symbol_in":      "SOL",
-            "symbol_out":     mint[:6],
-            "amount_in":      sol_lamports,
-            "amount_out":     int(token_amount),
-            "wallet_pre_sol": 0,   # no disponible en PumpPortal
+            "wallet":              wallet,
+            "program":             program,
+            "token_in":            SOL_MINT,
+            "token_out":           mint,
+            "symbol_in":           "SOL",
+            "symbol_out":          mint[:6],
+            "amount_in":           sol_lamports,
+            "amount_out":          int(token_amount),
+            "wallet_pre_sol":      0,
+            "implied_price_sol":   implied_price_sol,  # precio en SOL/token (UI)
         }
     else:  # sell
         return {
-            "wallet":         wallet,
-            "program":        program,
-            "token_in":       mint,
-            "token_out":      SOL_MINT,
-            "symbol_in":      mint[:6],
-            "symbol_out":     "SOL",
-            "amount_in":      int(token_amount),
-            "amount_out":     sol_lamports,
-            "wallet_pre_sol": 0,
+            "wallet":              wallet,
+            "program":             program,
+            "token_in":            mint,
+            "token_out":           SOL_MINT,
+            "symbol_in":           mint[:6],
+            "symbol_out":          "SOL",
+            "amount_in":           int(token_amount),
+            "amount_out":          sol_lamports,
+            "wallet_pre_sol":      0,
+            "implied_price_sol":   implied_price_sol,
         }
 
 

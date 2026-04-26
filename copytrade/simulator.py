@@ -12,6 +12,7 @@ Así el simulador refleja exactamente lo que pasará con dinero real.
 import json
 import os
 import time
+import threading
 from datetime import datetime
 
 # Caché del precio de SOL en USD — se refresca cada 60s
@@ -113,6 +114,7 @@ def _save_balance():
 _positions:   dict[str, dict] = _load_positions()  # {token_mint: position}
 _history:     list[dict]                 = _load_history()
 _sim_balance: float                      = _load_balance()
+_lock = threading.Lock()  # protege _positions contra race conditions
 
 
 # ── Capital dinámico ──────────────────────────────────────────────────────────
@@ -172,14 +174,18 @@ def process(swap: dict):
 
     wallet_buy_time = swap.get("wallet_buy_time")
 
-    # Precio implícito desde el swap (fallback para tokens sin precio en DexScreener)
+    # Precio implícito: usar el precalculado de PumpPortal (ya en UI) o calcularlo desde Helius
     implied_price: float = 0.0
-    if is_buy and swap.get("amount_in", 0) > 0 and swap.get("amount_out", 0) > 0:
-        sol_amount    = swap["amount_in"] / 1_000_000_000          # lamports → SOL
-        token_amount  = swap["amount_out"] / 1_000_000             # asume 6 decimales (Pump.fun)
-        if token_amount > 0:
-            sol_price     = _get_sol_price_usd()
-            implied_price = (sol_amount / token_amount) * sol_price
+    if is_buy:
+        if swap.get("implied_price_sol", 0) > 0:
+            # PumpPortal: precio en SOL/token ya correcto (tokenAmount en UI)
+            implied_price = swap["implied_price_sol"] * _get_sol_price_usd()
+        elif swap.get("amount_in", 0) > 0 and swap.get("amount_out", 0) > 0:
+            # Helius: amount_out en unidades mínimas → dividir por 1e6
+            sol_amount   = swap["amount_in"] / 1_000_000_000
+            token_amount = swap["amount_out"] / 1_000_000
+            if token_amount > 0:
+                implied_price = (sol_amount / token_amount) * _get_sol_price_usd()
 
     if is_buy:
         _handle_buy(wallet, wallet_label, token_out, symbol_out, wallet_buy_time, implied_price)
@@ -194,9 +200,12 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
     """Abre posición simulada al precio actual usando % del balance."""
     global _sim_balance
 
-    # Ya tenemos posición en este token (cualquier wallet) — igual que el executor real
-    if _positions.get(token_mint):
-        return
+    with _lock:
+        # Ya tenemos posición en este token — igual que el executor real
+        if _positions.get(token_mint):
+            return
+        # Reservar el slot inmediatamente para evitar race conditions
+        _positions[token_mint] = {}  # placeholder
 
     # Balance demasiado bajo — simular liquidación
     if _sim_balance < SIM_LIQUIDATION:
@@ -267,8 +276,9 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str):
     """Cierra posición simulada, actualiza balance y calcula P&L."""
     global _sim_balance
 
-    pos = _positions.pop(token_mint, None)
-    if not pos:
+    with _lock:
+        pos = _positions.pop(token_mint, None)
+    if not pos or not pos.get("entry_price"):  # ignorar placeholders vacíos
         log.debug(f"[SIM] Venta de {symbol} sin posición abierta — ignorando")
         return
 
