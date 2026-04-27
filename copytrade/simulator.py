@@ -1,12 +1,12 @@
 """
-Simulador de P&L para copy trades — modo capital proporcional y compuesto.
+Simulador de P&L realista — replica exactamente lo que pasaría en live.
 
-Cuando una wallet monitorizada compra un token → abre posición simulada.
-Cuando la misma wallet vende ese token → cierra y calcula ganancia/pérdida.
-
-El capital NO es fijo: empieza en SIM_CAPITAL ($20) y crece/baja con cada trade.
-Cada compra usa SIM_TRADE_PCT del balance actual (con escalado igual al executor).
-Así el simulador refleja exactamente lo que pasará con dinero real.
+Reglas de realismo:
+- Capital inicial = SIM_CAPITAL (valor real en USD de tu wallet)
+- Trade size = SIM_TRADE_PCT * capital_inicial (FIJO, sin compounding irreal)
+- Slippage = SIM_SLIPPAGE_PCT por leg (compra + venta) — defecto 8% (Pump.fun BC real)
+- Fee = SIM_PRIORITY_FEE_SOL * precio_sol (round-trip real)
+- El balance sí sube/baja, pero el tamaño de trade está CAPADO al trade inicial
 """
 
 import json
@@ -51,19 +51,21 @@ if os.getenv("SIM_RESET", "false").lower() == "true":
             os.remove(_f)
 
 # Capital inicial configurado en .env (default $45)
-SIM_INITIAL_CAPITAL = float(os.getenv("SIM_CAPITAL",    "45.0"))
-SIM_TRADE_PCT       = float(os.getenv("SIM_TRADE_PCT",  "0.05"))   # 5% base por trade
+SIM_INITIAL_CAPITAL = float(os.getenv("SIM_CAPITAL",    "22.0"))
+SIM_TRADE_PCT       = float(os.getenv("SIM_TRADE_PCT",  "0.20"))   # 20% por trade
 SIM_MIN_TRADE       = float(os.getenv("SIM_MIN_TRADE",  "0.50"))   # mínimo $0.50 por trade
-SIM_LIQUIDATION     = float(os.getenv("SIM_LIQUIDATION","3.0"))    # pausar si balance < $3
+SIM_LIQUIDATION     = float(os.getenv("SIM_LIQUIDATION","2.0"))    # pausar si balance < $2
 
-# Costos reales de ejecución (round-trip: compra + venta)
-# priority fee 0.0002 SOL × 2 = 0.0004 SOL + slippage estimado ~3% por tx
-SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004"))  # round-trip
-SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.03"))   # 3% por tx (entry+exit)
+# Costos reales de ejecución — calibrados para Pump.fun bonding curve
+# Slippage 8% por leg es conservador pero realista para BC tokens de baja liquidez
+SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004"))  # 0.0002 SOL × 2 round-trip
+SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.08"))   # 8% por leg (entry+exit)
 
-# Cap realista: nunca tradear más que el trade inicial (evita compounding irreal en meme coins)
-_default_max_trade = round(SIM_INITIAL_CAPITAL * SIM_TRADE_PCT, 2)
-SIM_MAX_TRADE = float(os.getenv("SIM_MAX_TRADE", str(_default_max_trade)))
+# Trade size fijo = capital_inicial × trade_pct — NO sube aunque el balance crezca.
+# Esto replica lo que harías en live: si empiezas con $22, cada trade es ~$4.40.
+SIM_INITIAL_TRADE = round(SIM_INITIAL_CAPITAL * SIM_TRADE_PCT, 2)
+# SIM_MAX_TRADE puede sobreescribirse desde Railway si quieres ajustar manualmente
+SIM_MAX_TRADE = float(os.getenv("SIM_MAX_TRADE", str(SIM_INITIAL_TRADE)))
 
 # Tokens que son "dinero" (SOL, USDC, USDT)
 STABLE_MINTS = {
@@ -263,10 +265,12 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
 
     latency_str = f" | delay [white]{latency_s:.0f}s[/]" if latency_s > 0.5 else ""
     profit_pct = (_sim_balance - SIM_INITIAL_CAPITAL) / SIM_INITIAL_CAPITAL * 100
+    slippage_cost = trade_amount * SIM_SLIPPAGE_PCT
     log.info(
         f"[SIM] 📥 ENTRADA | [cyan]{label}[/] compró [yellow]{symbol}[/] | "
         f"precio: [white]${price:.8f}[/] | "
-        f"trade: [green]${trade_amount:.2f}[/] ({tier_pct*100:.0f}% de ${_sim_balance:.2f})"
+        f"trade: [green]${trade_amount:.2f}[/] ({tier_pct*100:.0f}% de ${SIM_INITIAL_CAPITAL:.2f} inicial) | "
+        f"slip_entrada: [dim]-${slippage_cost:.3f} ({SIM_SLIPPAGE_PCT*100:.0f}%)[/]"
         f"{ctx_str}{latency_str}"
     )
 
@@ -350,12 +354,13 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str):
     color = "green" if won else "red"
     bal_color = "green" if _sim_balance >= SIM_INITIAL_CAPITAL else "red"
 
+    total_cost_pct = (SIM_SLIPPAGE_PCT * 2 * 100) + (fee_usd / amount_usd * 100)
     log.info(
         f"[SIM] {icon} | [cyan]{label}[/] vendió [yellow]{symbol}[/] | "
         f"[{color}]{pnl_pct:+.1f}%[/] ([{color}]${pnl_usd:+.2f}[/]) | "
         f"entrada ${entry:.8f} → salida ${price_exit:.8f} | "
-        f"fee [dim]${fee_usd:.3f}[/] | {hold_min:.0f} min | "
-        f"balance: [{bal_color}]${_sim_balance:.2f}[/]"
+        f"coste real: [dim]slip {SIM_SLIPPAGE_PCT*200:.0f}% + fee ${fee_usd:.3f} = {total_cost_pct:.1f}%[/] | "
+        f"{hold_min:.0f} min | balance: [{bal_color}]${_sim_balance:.2f}[/]"
     )
 
     _print_summary()
