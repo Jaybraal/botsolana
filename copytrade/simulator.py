@@ -53,8 +53,6 @@ if os.getenv("SIM_RESET", "false").lower() == "true":
 # Capital inicial configurado en .env (default $45)
 SIM_INITIAL_CAPITAL = float(os.getenv("SIM_CAPITAL",    "45.0"))
 SIM_TRADE_PCT       = float(os.getenv("SIM_TRADE_PCT",  "0.05"))   # 5% base por trade
-
-print(f"[SIM-DEBUG] SIM_TRADE_PCT raw env = {os.getenv('SIM_TRADE_PCT')!r} → parsed = {SIM_TRADE_PCT}", flush=True)
 SIM_MIN_TRADE       = float(os.getenv("SIM_MIN_TRADE",  "0.50"))   # mínimo $0.50 por trade
 SIM_LIQUIDATION     = float(os.getenv("SIM_LIQUIDATION","3.0"))    # pausar si balance < $3
 
