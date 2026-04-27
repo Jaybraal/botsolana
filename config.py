@@ -6,9 +6,13 @@ load_dotenv()
 RPC_HTTP = os.getenv("SOLANA_RPC_HTTP", "https://api.mainnet-beta.solana.com")
 RPC_WS   = os.getenv("SOLANA_RPC_WS",  "wss://api.mainnet-beta.solana.com")
 
+# --- Modo live/simulación ---
+# Poner LIVE_MODE=false en Railway para pausar trading real sin borrar las keys.
+_LIVE_MODE = os.getenv("LIVE_MODE", "true").lower() == "true"
+
 # --- Tu wallet ---
-WALLET_PUBKEY     = os.getenv("WALLET_PUBKEY", "")
-WALLET_PRIVKEY    = os.getenv("WALLET_PRIVKEY_B58", "")
+WALLET_PUBKEY     = os.getenv("WALLET_PUBKEY", "") if _LIVE_MODE else ""
+WALLET_PRIVKEY    = os.getenv("WALLET_PRIVKEY_B58", "") if _LIVE_MODE else ""
 
 # --- Wallets a copiar ---
 _raw = os.getenv("TARGET_WALLETS", "")
