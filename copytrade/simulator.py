@@ -61,6 +61,10 @@ SIM_LIQUIDATION     = float(os.getenv("SIM_LIQUIDATION","3.0"))    # pausar si b
 SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004"))  # round-trip
 SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.03"))   # 3% por tx (entry+exit)
 
+# Cap realista: nunca tradear más que el trade inicial (evita compounding irreal en meme coins)
+_default_max_trade = round(SIM_INITIAL_CAPITAL * SIM_TRADE_PCT, 2)
+SIM_MAX_TRADE = float(os.getenv("SIM_MAX_TRADE", str(_default_max_trade)))
+
 # Tokens que son "dinero" (SOL, USDC, USDT)
 STABLE_MINTS = {
     "So11111111111111111111111111111111111111112",
@@ -135,8 +139,9 @@ def _get_trade_pct() -> float:
 
 
 def _get_trade_amount() -> float:
-    """Calcula el monto en USD para el próximo trade."""
-    return _sim_balance * _get_trade_pct()
+    """Calcula el monto en USD para el próximo trade, con cap realista."""
+    amount = _sim_balance * _get_trade_pct()
+    return min(amount, SIM_MAX_TRADE) if SIM_MAX_TRADE > 0 else amount
 
 
 def _get_price(mint: str) -> float | None:
