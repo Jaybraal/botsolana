@@ -3,10 +3,10 @@ Simulador de P&L realista — replica exactamente lo que pasaría en live.
 
 Reglas de realismo:
 - Capital inicial = SIM_CAPITAL (valor real en USD de tu wallet)
-- Trade size = SIM_TRADE_PCT * capital_inicial (FIJO, sin compounding irreal)
+- Trade size = mismo % que en live: MAX_TRADE_PCT + SCALING_TIERS de config.py
 - Slippage = SIM_SLIPPAGE_PCT por leg (compra + venta) — defecto 8% (Pump.fun BC real)
 - Fee = SIM_PRIORITY_FEE_SOL * precio_sol (round-trip real)
-- El balance sí sube/baja, pero el tamaño de trade está CAPADO al trade inicial
+- El balance compone igual que en live: a mayor ganancia, mayor % por trade
 """
 
 import json
@@ -14,6 +14,11 @@ import os
 import time
 import threading
 from datetime import datetime
+
+from config import MAX_TRADE_PCT, SCALING_TIERS
+from utils.dexscreener import get_best_pair
+from utils.market_context import get_context
+from utils.logger import get_logger
 
 # Caché del precio de SOL en USD — se refresca cada 60s
 _sol_price_usd:       float = 0.0
@@ -24,17 +29,13 @@ def _get_sol_price_usd() -> float:
     if time.time() - _sol_price_fetched_at < 60 and _sol_price_usd > 0:
         return _sol_price_usd
     try:
-        from utils.dexscreener import get_best_pair
         pair = get_best_pair("So11111111111111111111111111111111111111112")
         if pair:
             _sol_price_usd = float(pair.get("priceUsd") or 0)
             _sol_price_fetched_at = time.time()
     except Exception:
         pass
-    return _sol_price_usd if _sol_price_usd > 0 else 150.0  # fallback conservador
-from utils.dexscreener import get_best_pair
-from utils.market_context import get_context
-from utils.logger import get_logger
+    return _sol_price_usd if _sol_price_usd > 0 else 150.0
 
 log = get_logger("simulator")
 
@@ -51,21 +52,11 @@ if os.getenv("SIM_RESET", "false").lower() == "true":
             os.remove(_f)
 
 # Capital inicial configurado en .env (default $45)
-SIM_INITIAL_CAPITAL = float(os.getenv("SIM_CAPITAL",    "22.0"))
-SIM_TRADE_PCT       = float(os.getenv("SIM_TRADE_PCT",  "0.20"))   # 20% por trade
-SIM_MIN_TRADE       = float(os.getenv("SIM_MIN_TRADE",  "0.50"))   # mínimo $0.50 por trade
-SIM_LIQUIDATION     = float(os.getenv("SIM_LIQUIDATION","2.0"))    # pausar si balance < $2
-
-# Costos reales de ejecución — calibrados para Pump.fun bonding curve
-# Slippage 8% por leg es conservador pero realista para BC tokens de baja liquidez
-SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004"))  # 0.0002 SOL × 2 round-trip
-SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.08"))   # 8% por leg (entry+exit)
-
-# Trade size fijo = capital_inicial × trade_pct — NO sube aunque el balance crezca.
-# Esto replica lo que harías en live: si empiezas con $22, cada trade es ~$4.40.
-SIM_INITIAL_TRADE = round(SIM_INITIAL_CAPITAL * SIM_TRADE_PCT, 2)
-# SIM_MAX_TRADE puede sobreescribirse desde Railway si quieres ajustar manualmente
-SIM_MAX_TRADE = float(os.getenv("SIM_MAX_TRADE", str(SIM_INITIAL_TRADE)))
+SIM_INITIAL_CAPITAL  = float(os.getenv("SIM_CAPITAL",         "22.0"))
+SIM_MIN_TRADE        = float(os.getenv("SIM_MIN_TRADE",        "0.50"))   # mínimo $0.50 por trade
+SIM_LIQUIDATION      = float(os.getenv("SIM_LIQUIDATION",      "2.0"))    # pausar si balance < $2
+SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004")) # 0.0002 SOL × 2 round-trip
+SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.08"))  # 8% por leg (Pump.fun BC)
 
 # Tokens que son "dinero" (SOL, USDC, USDT)
 STABLE_MINTS = {
@@ -137,13 +128,18 @@ _lock = threading.Lock()  # protege _positions contra race conditions
 # ── Capital dinámico ──────────────────────────────────────────────────────────
 
 def _get_trade_pct() -> float:
-    return SIM_TRADE_PCT
+    """Mismo escalado que executor._get_dynamic_trade_pct, expresado en USD."""
+    if SIM_INITIAL_CAPITAL <= 0:
+        return MAX_TRADE_PCT
+    profit_pct = (_sim_balance - SIM_INITIAL_CAPITAL) / SIM_INITIAL_CAPITAL
+    for min_profit, trade_pct in reversed(SCALING_TIERS):
+        if profit_pct >= min_profit:
+            return trade_pct
+    return MAX_TRADE_PCT
 
 
 def _get_trade_amount() -> float:
-    """Calcula el monto en USD para el próximo trade, con cap realista."""
-    amount = _sim_balance * _get_trade_pct()
-    return min(amount, SIM_MAX_TRADE) if SIM_MAX_TRADE > 0 else amount
+    return _sim_balance * _get_trade_pct()
 
 
 def _get_price(mint: str) -> float | None:
@@ -264,12 +260,11 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
         )
 
     latency_str = f" | delay [white]{latency_s:.0f}s[/]" if latency_s > 0.5 else ""
-    profit_pct = (_sim_balance - SIM_INITIAL_CAPITAL) / SIM_INITIAL_CAPITAL * 100
     slippage_cost = trade_amount * SIM_SLIPPAGE_PCT
     log.info(
         f"[SIM] 📥 ENTRADA | [cyan]{label}[/] compró [yellow]{symbol}[/] | "
         f"precio: [white]${price:.8f}[/] | "
-        f"trade: [green]${trade_amount:.2f}[/] ({tier_pct*100:.0f}% de ${SIM_INITIAL_CAPITAL:.2f} inicial) | "
+        f"trade: [green]${trade_amount:.2f}[/] ({tier_pct*100:.0f}% de ${_sim_balance:.2f} balance) | "
         f"slip_entrada: [dim]-${slippage_cost:.3f} ({SIM_SLIPPAGE_PCT*100:.0f}%)[/]"
         f"{ctx_str}{latency_str}"
     )
