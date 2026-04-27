@@ -44,11 +44,16 @@ POSITIONS_FILE = "data/sim_positions.json"
 HISTORY_FILE   = "data/sim_history.json"
 BALANCE_FILE   = "data/sim_balance.json"
 
-# Capital inicial configurado en .env (default $20)
-SIM_INITIAL_CAPITAL = float(os.getenv("SIM_CAPITAL",    "20.0"))
+# Capital inicial configurado en .env (default $45)
+SIM_INITIAL_CAPITAL = float(os.getenv("SIM_CAPITAL",    "45.0"))
 SIM_TRADE_PCT       = float(os.getenv("SIM_TRADE_PCT",  "0.05"))   # 5% base por trade
 SIM_MIN_TRADE       = float(os.getenv("SIM_MIN_TRADE",  "0.50"))   # mínimo $0.50 por trade
-SIM_LIQUIDATION     = float(os.getenv("SIM_LIQUIDATION","2.0"))    # pausar si balance < $2
+SIM_LIQUIDATION     = float(os.getenv("SIM_LIQUIDATION","5.0"))    # pausar si balance < $5
+
+# Costos reales de ejecución (round-trip: compra + venta)
+# priority fee 0.0002 SOL × 2 = 0.0004 SOL + slippage estimado ~3% por tx
+SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004"))  # round-trip
+SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.03"))   # 3% por tx (entry+exit)
 
 # Tokens que son "dinero" (SOL, USDC, USDT)
 STABLE_MINTS = {
@@ -293,9 +298,18 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str):
 
     entry      = pos["entry_price"]
     amount_usd = pos["amount_usd"]
-    pnl_pct    = (price_exit - entry) / entry * 100
-    pnl_usd    = amount_usd * pnl_pct / 100
-    won        = pnl_pct > 0
+
+    # Ajuste de slippage: compramos peor y vendemos peor que el precio de mercado
+    entry_adj     = entry * (1 + SIM_SLIPPAGE_PCT)
+    exit_adj      = price_exit * (1 - SIM_SLIPPAGE_PCT)
+    pnl_pct       = (exit_adj - entry_adj) / entry_adj * 100
+    pnl_usd       = amount_usd * pnl_pct / 100
+
+    # Fees reales: priority fee round-trip en USD
+    fee_usd  = SIM_PRIORITY_FEE_SOL * _get_sol_price_usd()
+    pnl_usd -= fee_usd
+
+    won = pnl_usd > 0
 
     # Actualizar balance compuesto
     balance_before = _sim_balance
@@ -344,7 +358,7 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str):
         f"[SIM] {icon} | [cyan]{label}[/] vendió [yellow]{symbol}[/] | "
         f"[{color}]{pnl_pct:+.1f}%[/] ([{color}]${pnl_usd:+.2f}[/]) | "
         f"entrada ${entry:.8f} → salida ${price_exit:.8f} | "
-        f"{hold_min:.0f} min | "
+        f"fee [dim]${fee_usd:.3f}[/] | {hold_min:.0f} min | "
         f"balance: [{bal_color}]${_sim_balance:.2f}[/]"
     )
 

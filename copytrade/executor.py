@@ -540,8 +540,8 @@ def _send_pumpfun_buy_pumpswap(mint: str, amount_lamports: int, keypair: Keypair
         "mint":             mint,
         "denominatedInSol": "true",
         "amount":           round(amount_sol, 6),
-        "slippage":         20,
-        "priorityFee":      0.0005,
+        "slippage":         15,
+        "priorityFee":      0.0002,
         "pool":             "pumpswap",
     }
     import httpx
