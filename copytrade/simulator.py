@@ -35,7 +35,6 @@ def _get_sol_price_usd() -> float:
 from utils.dexscreener import get_best_pair
 from utils.market_context import get_context
 from utils.logger import get_logger
-from config import SCALING_TIERS
 
 log = get_logger("simulator")
 
@@ -131,23 +130,8 @@ _lock = threading.Lock()  # protege _positions contra race conditions
 
 # ── Capital dinámico ──────────────────────────────────────────────────────────
 
-SIM_MAX_TRADE_PCT = float(os.getenv("SIM_MAX_TRADE_PCT", "0.10"))
-
-
 def _get_trade_pct() -> float:
-    """
-    Devuelve el % del balance a usar en el próximo trade.
-    Usa los mismos SCALING_TIERS que el executor real pero
-    con techo fijo SIM_MAX_TRADE_PCT para que la simulación
-    sea realista respecto al capital real ($20).
-    """
-    if SIM_INITIAL_CAPITAL <= 0:
-        return SIM_TRADE_PCT
-    profit_pct = (_sim_balance - SIM_INITIAL_CAPITAL) / SIM_INITIAL_CAPITAL
-    for min_profit, trade_pct in reversed(SCALING_TIERS):
-        if profit_pct >= min_profit:
-            return min(trade_pct, SIM_MAX_TRADE_PCT)
-    return min(SIM_TRADE_PCT, SIM_MAX_TRADE_PCT)
+    return SIM_TRADE_PCT
 
 
 def _get_trade_amount() -> float:
