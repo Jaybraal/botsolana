@@ -44,11 +44,18 @@ POSITIONS_FILE = "data/sim_positions.json"
 HISTORY_FILE   = "data/sim_history.json"
 BALANCE_FILE   = "data/sim_balance.json"
 
+# Si SIM_RESET=true, borra datos previos y empieza desde SIM_CAPITAL limpio.
+# Poner en false después del primer deploy para que no resetee en reinicios.
+if os.getenv("SIM_RESET", "false").lower() == "true":
+    for _f in [POSITIONS_FILE, HISTORY_FILE, BALANCE_FILE]:
+        if os.path.exists(_f):
+            os.remove(_f)
+
 # Capital inicial configurado en .env (default $45)
 SIM_INITIAL_CAPITAL = float(os.getenv("SIM_CAPITAL",    "45.0"))
 SIM_TRADE_PCT       = float(os.getenv("SIM_TRADE_PCT",  "0.05"))   # 5% base por trade
 SIM_MIN_TRADE       = float(os.getenv("SIM_MIN_TRADE",  "0.50"))   # mínimo $0.50 por trade
-SIM_LIQUIDATION     = float(os.getenv("SIM_LIQUIDATION","5.0"))    # pausar si balance < $5
+SIM_LIQUIDATION     = float(os.getenv("SIM_LIQUIDATION","3.0"))    # pausar si balance < $3
 
 # Costos reales de ejecución (round-trip: compra + venta)
 # priority fee 0.0002 SOL × 2 = 0.0004 SOL + slippage estimado ~3% por tx
