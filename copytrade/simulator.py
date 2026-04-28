@@ -52,11 +52,17 @@ if os.getenv("SIM_RESET", "false").lower() == "true":
             os.remove(_f)
 
 # Capital inicial configurado en .env (default $45)
-SIM_INITIAL_CAPITAL  = float(os.getenv("SIM_CAPITAL",         "22.0"))
+SIM_INITIAL_CAPITAL  = float(os.getenv("SIM_CAPITAL",         "50.0"))
 SIM_MIN_TRADE        = float(os.getenv("SIM_MIN_TRADE",        "0.50"))   # mínimo $0.50 por trade
 SIM_LIQUIDATION      = float(os.getenv("SIM_LIQUIDATION",      "2.0"))    # pausar si balance < $2
 SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004")) # 0.0002 SOL × 2 round-trip
 SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.08"))  # 8% por leg (Pump.fun BC)
+
+# Tope máximo por trade en USD — refleja el límite real de liquidez en pump.fun BC.
+# Con $50 capital y 10% por trade = $5 inicial. Nunca superar este monto por posición
+# porque los BC tokens no tienen liquidez para absorber compras > $10-15 sin slippage brutal.
+_initial_trade_usd   = round(SIM_INITIAL_CAPITAL * MAX_TRADE_PCT, 2)
+SIM_MAX_TRADE_USD    = float(os.getenv("SIM_MAX_TRADE_USD", str(_initial_trade_usd)))
 
 # Tokens que son "dinero" (SOL, USDC, USDT)
 STABLE_MINTS = {
@@ -139,7 +145,8 @@ def _get_trade_pct() -> float:
 
 
 def _get_trade_amount() -> float:
-    return _sim_balance * _get_trade_pct()
+    amount = _sim_balance * _get_trade_pct()
+    return min(amount, SIM_MAX_TRADE_USD) if SIM_MAX_TRADE_USD > 0 else amount
 
 
 def _get_price(mint: str) -> float | None:
