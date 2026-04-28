@@ -58,11 +58,16 @@ SIM_LIQUIDATION      = float(os.getenv("SIM_LIQUIDATION",      "2.0"))    # paus
 SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004")) # 0.0002 SOL × 2 round-trip
 SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.08"))  # 8% por leg (Pump.fun BC)
 
-# Tope máximo por trade en USD — refleja el límite real de liquidez en pump.fun BC.
-# Con $50 capital y 10% por trade = $5 inicial. Nunca superar este monto por posición
-# porque los BC tokens no tienen liquidez para absorber compras > $10-15 sin slippage brutal.
-_initial_trade_usd   = round(SIM_INITIAL_CAPITAL * MAX_TRADE_PCT, 2)
-SIM_MAX_TRADE_USD    = float(os.getenv("SIM_MAX_TRADE_USD", str(_initial_trade_usd)))
+# Tiers de tamaño por trade según balance — a mayor capital, MENOR % por trade.
+# Lógica inversa: con capital pequeño el % es alto (cada trade es poco dinero),
+# con capital grande el % baja para no exceder la liquidez real de pump.fun BC.
+# (balance_mínimo, tope_usd_por_trade, %_efectivo_aproximado)
+TRADE_CAP_TIERS: list[tuple[float, float]] = [
+    (0,    5.0),   # $0–$150   → $5/trade   (~10%)  pump.fun BC fresco
+    (150,  8.0),   # $150–$400 → $8/trade   (~3-5%) BC con algo de volumen
+    (400,  12.0),  # $400–$1k  → $12/trade  (~1-3%) tokens más maduros / PumpSwap
+    (1000, 15.0),  # $1k+      → $15/trade  (<1.5%) máximo realista para BC tokens
+]
 
 # Tokens que son "dinero" (SOL, USDC, USDT)
 STABLE_MINTS = {
@@ -144,9 +149,18 @@ def _get_trade_pct() -> float:
     return MAX_TRADE_PCT
 
 
+def _get_trade_cap_usd() -> float:
+    """Tope por trade según balance — a mayor capital, menor % efectivo por trade."""
+    cap = TRADE_CAP_TIERS[0][1]
+    for min_balance, max_usd in TRADE_CAP_TIERS:
+        if _sim_balance >= min_balance:
+            cap = max_usd
+    return cap
+
+
 def _get_trade_amount() -> float:
     amount = _sim_balance * _get_trade_pct()
-    return min(amount, SIM_MAX_TRADE_USD) if SIM_MAX_TRADE_USD > 0 else amount
+    return min(amount, _get_trade_cap_usd())
 
 
 def _get_price(mint: str) -> float | None:
