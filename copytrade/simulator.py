@@ -58,15 +58,17 @@ SIM_LIQUIDATION      = float(os.getenv("SIM_LIQUIDATION",      "2.0"))    # paus
 SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004")) # 0.0002 SOL × 2 round-trip
 SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.08"))  # 8% por leg (Pump.fun BC)
 
-# Tiers de tamaño por trade según balance — a mayor capital, MENOR % por trade.
-# Lógica inversa: con capital pequeño el % es alto (cada trade es poco dinero),
-# con capital grande el % baja para no exceder la liquidez real de pump.fun BC.
-# (balance_mínimo, tope_usd_por_trade, %_efectivo_aproximado)
+# Tiers de tamaño por trade según balance — escala progresivamente conforme crece el capital.
+# Parte de $5/trade con $50 de capital y sube hasta $100/trade a partir de $5k.
+# (balance_mínimo, tope_usd_por_trade)
 TRADE_CAP_TIERS: list[tuple[float, float]] = [
-    (0,    5.0),   # $0–$150   → $5/trade   (~10%)  pump.fun BC fresco
-    (150,  8.0),   # $150–$400 → $8/trade   (~3-5%) BC con algo de volumen
-    (400,  12.0),  # $400–$1k  → $12/trade  (~1-3%) tokens más maduros / PumpSwap
-    (1000, 15.0),  # $1k+      → $15/trade  (<1.5%) máximo realista para BC tokens
+    (0,     5.0),   # $0–$100    → $5/trade    (~5-10%)
+    (100,  10.0),   # $100–$300  → $10/trade   (~3-10%)
+    (300,  20.0),   # $300–$600  → $20/trade   (~3-7%)
+    (600,  35.0),   # $600–$1k   → $35/trade   (~3-6%)
+    (1000, 50.0),   # $1k–$2k    → $50/trade   (~2-5%)
+    (2000, 75.0),   # $2k–$5k    → $75/trade   (~1.5-3.8%)
+    (5000, 100.0),  # $5k+       → $100/trade  (~1-2%)
 ]
 
 # Tokens que son "dinero" (SOL, USDC, USDT)
