@@ -15,6 +15,7 @@ import certifi
 import websockets
 import httpx
 import time
+import random
 from datetime import datetime
 
 from config import RPC_HTTP, RPC_WS, TARGET_WALLETS, WALLET_LABELS, TOKENS
@@ -185,14 +186,15 @@ async def watch():
                     await handle_message(msg)
 
         except websockets.ConnectionClosed as e:
-            log.warning(f"[Helius] WebSocket cerrado ({e.code}). Reconectando en {retry_delay}s...")
+            log.warning(f"[Helius] WebSocket cerrado ({e.code}). Reconectando en {retry_delay:.0f}s...")
         except OSError as e:
-            log.error(f"[Helius] Error de red: {e}. Reconectando en {retry_delay}s...")
+            log.error(f"[Helius] Error de red: {e}. Reconectando en {retry_delay:.0f}s...")
         except Exception as e:
-            log.error(f"[Helius] Error inesperado: {e}. Reconectando en {retry_delay}s...")
+            log.error(f"[Helius] Error inesperado: {e}. Reconectando en {retry_delay:.0f}s...")
 
-        await asyncio.sleep(retry_delay)
-        retry_delay = min(retry_delay * 2, 60)
+        jitter = retry_delay * random.uniform(0.8, 1.4)
+        await asyncio.sleep(jitter)
+        retry_delay = min(retry_delay * 1.5, 120)
 
 
 def _pumpportal_to_swap(data: dict) -> dict | None:
@@ -341,14 +343,16 @@ async def watch_pumpportal():
                     await handle_pumpportal_message(msg)
 
         except websockets.ConnectionClosed as e:
-            log.warning(f"[PumpPortal] WebSocket cerrado ({e.code}). Reconectando en {retry_delay}s...")
+            log.warning(f"[PumpPortal] WebSocket cerrado ({e.code}). Reconectando en {retry_delay:.0f}s...")
         except OSError as e:
-            log.error(f"[PumpPortal] Error de red: {e}. Reconectando en {retry_delay}s...")
+            log.error(f"[PumpPortal] Error de red: {e}. Reconectando en {retry_delay:.0f}s...")
         except Exception as e:
-            log.error(f"[PumpPortal] Error inesperado: {e}. Reconectando en {retry_delay}s...")
+            log.error(f"[PumpPortal] Error inesperado (servidor): {e}. Reconectando en {retry_delay:.0f}s...")
 
-        await asyncio.sleep(retry_delay)
-        retry_delay = min(retry_delay * 2, 60)
+        # Jitter para evitar reconexiones en ráfaga — distribuye carga al servidor
+        jitter = retry_delay * random.uniform(0.8, 1.4)
+        await asyncio.sleep(jitter)
+        retry_delay = min(retry_delay * 1.5, 120)
 
 
 async def watch_all():
