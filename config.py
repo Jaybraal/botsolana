@@ -34,7 +34,7 @@ WALLET_LABELS: dict[str, str] = {
 }
 
 # --- Config del bot (copy trade) ---
-SLIPPAGE_BPS     = int(os.getenv("SLIPPAGE_BPS", "100"))   # 100 = 1%
+SLIPPAGE_BPS     = int(os.getenv("SLIPPAGE_BPS", "75"))   # 75 = 0.75% (optimizado)
 
 # --- Modo proporcional ---
 # El bot invierte el mismo % del capital que invirtió la wallet objetivo.
@@ -49,8 +49,8 @@ MAX_TRADE_PCT  = float(os.getenv("MAX_TRADE_PCT",  "0.05"))  # 5% máximo por tr
 MIN_TRADE_SOL  = float(os.getenv("MIN_TRADE_SOL",  "0.005"))  # en SOL
 
 # Máximo de posiciones abiertas simultáneamente.
-# Con capital pequeño, limitar a 2 para no sobreexponer.
-MAX_OPEN_COPIES = int(os.getenv("MAX_OPEN_COPIES", "2"))
+# Sin límite — se abren y cierren todas las que se puedan en paralelo.
+MAX_OPEN_COPIES = int(os.getenv("MAX_OPEN_COPIES", "999"))
 
 # --- Protección de capital ---
 # Si el balance cae por debajo de este % del capital inicial, el bot deja de operar.
@@ -73,10 +73,13 @@ SCALING_TIERS: list[tuple[float, float]] = [
     (0.10, 0.07),           # +10% profit:  7% por trade
     (0.30, 0.10),           # +30% profit: 10% por trade
     (0.60, 0.12),           # +60% profit: 12% por trade
-    (1.00, 0.15),           # +100% profit: 15% por trade (capital doblado)
+    (1.00, 0.15),           # +100% profit: 15% por trade
     (2.00, 0.18),           # +200% profit: 18% por trade
     (4.00, 0.22),           # +400% profit: 22% por trade
     (7.00, 0.25),           # +700% profit: 25% por trade
+    (10.0, 0.30),           # +1000% profit: 30% por trade
+    (20.0, 0.35),           # +2000% profit: 35% por trade
+    (35.0, 0.40),           # +3500% profit: 40% por trade
 ]
 
 # --- Programas conocidos en Solana ---

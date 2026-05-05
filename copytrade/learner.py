@@ -103,7 +103,7 @@ def update() -> dict | None:
 
     ctx_keys = (
         "mcap_usd", "liquidity_usd", "volume_24h_usd",
-        "vol_liq_ratio", "buy_pressure",
+        "vol_liq_ratio", "buy_pressure", "age_minutes",
         "change_1h_pct", "change_24h_pct", "age_days",
     )
     winner_avg = {k: _avg(winners, k) for k in ctx_keys}
@@ -112,11 +112,13 @@ def update() -> dict | None:
     # Thresholds derivados: zona de confort de los ganadores con margen de seguridad
     wa = winner_avg
     scoring_rules: dict = {}
-    if wa["mcap_usd"]       is not None: scoring_rules["max_mcap_usd"]       = round(wa["mcap_usd"]       * 1.5, 0)
+    if wa["mcap_usd"]       is not None: scoring_rules["min_mcap_usd"]        = max(5000, round(wa["mcap_usd"] * 0.5, 0))  # mín $5K
+    if wa["mcap_usd"]       is not None: scoring_rules["max_mcap_usd"]        = round(wa["mcap_usd"] * 1.5, 0)
     if wa["liquidity_usd"]  is not None: scoring_rules["min_liquidity_usd"]   = round(wa["liquidity_usd"]  * 0.5, 0)
     if wa["volume_24h_usd"] is not None: scoring_rules["min_volume_24h_usd"]  = round(wa["volume_24h_usd"] * 0.5, 0)
     if wa["buy_pressure"]   is not None: scoring_rules["min_buy_pressure"]    = round(wa["buy_pressure"]   * 0.85, 3)
     if wa["change_1h_pct"]  is not None: scoring_rules["min_change_1h_pct"]   = round(wa["change_1h_pct"]  * 0.5, 2)
+    if wa["age_minutes"]    is not None: scoring_rules["min_age_minutes"]     = max(5, round(wa["age_minutes"] * 0.8, 0))  # mín 5 min
     if wa["age_days"]       is not None: scoring_rules["max_age_days"]        = round(wa["age_days"]       * 2.0, 1)
 
     rules = {
@@ -173,11 +175,13 @@ def score_opportunity(context: dict) -> tuple[float, list[str]]:
             f"{value:,.2f} {sym} {threshold:,.2f}"
         )
 
-    check("McAp",          context.get("mcap_usd"),       scoring.get("max_mcap_usd"),      is_max=True)
+    check("McAp (mín)",    context.get("mcap_usd"),       scoring.get("min_mcap_usd"))
+    check("McAp (máx)",    context.get("mcap_usd"),       scoring.get("max_mcap_usd"),      is_max=True)
     check("Liquidez",      context.get("liquidity_usd"),  scoring.get("min_liquidity_usd"))
     check("Volumen 24h",   context.get("volume_24h_usd"), scoring.get("min_volume_24h_usd"))
     check("Buy pressure",  context.get("buy_pressure"),   scoring.get("min_buy_pressure"))
     check("Trend 1h %",    context.get("change_1h_pct"),  scoring.get("min_change_1h_pct"))
+    check("Edad (min)",    context.get("age_minutes"),    scoring.get("min_age_minutes"))
     check("Edad (días)",   context.get("age_days"),        scoring.get("max_age_days"),      is_max=True)
 
     score = round(passed / total, 2) if total > 0 else 0.5
@@ -260,11 +264,13 @@ def print_insights():
     sr = rules.get("scoring_rules", {})
     if sr:
         labels = {
+            "min_mcap_usd":       ("McAp mínimo",         "≥ X  (evita rugs muy pequeños)"),
             "max_mcap_usd":       ("McAp máximo",         "≤ X  (token pequeño = más upside)"),
             "min_liquidity_usd":  ("Liquidez mínima",     "≥ X  (puedo salir sin problema)"),
             "min_volume_24h_usd": ("Volumen 24h mínimo",  "≥ X  (hay actividad real)"),
             "min_buy_pressure":   ("Buy pressure mínima", "≥ X  (más compradores que vendedores)"),
             "min_change_1h_pct":  ("Tendencia 1h mínima", "≥ X% (momentum positivo)"),
+            "min_age_minutes":    ("Edad mínima",         "≥ X min (token estable, no pump reciente)"),
             "max_age_days":       ("Edad máxima",         "≤ X  (token relativamente nuevo)"),
         }
         rt = Table(box=box.SIMPLE_HEAD, show_header=True,
