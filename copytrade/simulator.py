@@ -246,8 +246,24 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
     opened_at = wallet_buy_time if wallet_buy_time else detected_at
     latency_s = detected_at - opened_at if wallet_buy_time else 0
 
-    # Precio: DexScreener primero, precio implícito del swap como fallback
-    price = _get_price(token_mint) or implied_price
+    # Precio: DexScreener primero (precio actual de mercado), implied como fallback.
+    # Si usamos implied_price (token nuevo, aún sin indexar), lo inflamos por latencia:
+    # en esos 2-3s de detección el precio ya subió — en live pagaríamos más caro.
+    dex_price = _get_price(token_mint)
+    if dex_price:
+        price = dex_price
+    elif implied_price:
+        # El token aún no está en DexScreener — usamos el precio del swap de la wallet.
+        # Pero ese precio es de hace `latency_s` segundos; en live compraríamos más caro.
+        latency_penalty = min(latency_s * 0.03, 0.30) if latency_s > 1 else 0.0
+        price = implied_price * (1 + latency_penalty)
+        if latency_penalty > 0:
+            log.debug(
+                f"[SIM] {symbol} sin DexScreener — precio ajustado por latencia "
+                f"{latency_s:.0f}s: +{latency_penalty*100:.0f}%"
+            )
+    else:
+        price = None
     if not price:
         log.debug(f"[SIM] No hay precio para {symbol} — no se abre posición")
         return
