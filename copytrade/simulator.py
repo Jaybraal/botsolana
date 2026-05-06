@@ -57,6 +57,8 @@ SIM_MIN_TRADE        = float(os.getenv("SIM_MIN_TRADE",        "0.50"))   # mín
 SIM_LIQUIDATION      = float(os.getenv("SIM_LIQUIDATION",      "2.0"))    # pausar si balance < $2
 SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004")) # 0.0002 SOL × 2 round-trip
 SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.015"))  # 1.5% por leg — realista para trades <$100 en Pump.fun
+SIM_MAX_HOLD_MIN     = float(os.getenv("SIM_MAX_HOLD_MIN",      "20"))     # auto-close si la wallet no vende en N minutos
+SIM_MAX_CONFIRMATIONS = int(os.getenv("SIM_MAX_CONFIRMATIONS",  "3"))      # max wallets que pueden escalar la misma posición
 
 # Tiers de tamaño por trade según balance — escala progresivamente conforme crece el capital.
 # (balance_mínimo, tope_usd_por_trade)
@@ -195,36 +197,86 @@ def process(swap: dict):
 
     wallet_buy_time = swap.get("wallet_buy_time")
 
-    # Precio implícito: usar el precalculado de PumpPortal (ya en UI) o calcularlo desde Helius
+    # Precio implícito de compra — PumpPortal (UI) o calculado desde Helius
     implied_price: float = 0.0
     if is_buy:
         if swap.get("implied_price_sol", 0) > 0:
-            # PumpPortal: precio en SOL/token ya correcto (tokenAmount en UI)
             implied_price = swap["implied_price_sol"] * _get_sol_price_usd()
         elif swap.get("amount_in", 0) > 0 and swap.get("amount_out", 0) > 0:
-            # Helius: amount_out en unidades mínimas → dividir por 1e6
             sol_amount   = swap["amount_in"] / 1_000_000_000
             token_amount = swap["amount_out"] / 1_000_000
             if token_amount > 0:
                 implied_price = (sol_amount / token_amount) * _get_sol_price_usd()
 
+    # Precio implícito de venta — precio REAL al que vendió la wallet (más preciso que DexScreener)
+    sell_implied: float = 0.0
+    if is_sell:
+        if swap.get("implied_price_sol", 0) > 0:
+            sell_implied = swap["implied_price_sol"] * _get_sol_price_usd()
+        elif swap.get("amount_out", 0) > 0 and swap.get("amount_in", 0) > 0:
+            sol_received = swap["amount_out"] / 1_000_000_000
+            token_amount = swap["amount_in"] / 1_000_000
+            if token_amount > 0:
+                sell_implied = (sol_received / token_amount) * _get_sol_price_usd()
+
     if is_buy:
         _handle_buy(wallet, wallet_label, token_out, symbol_out, wallet_buy_time, implied_price)
     elif is_sell:
-        _handle_sell(wallet, wallet_label, token_in, symbol_in)
+        _handle_sell(wallet, wallet_label, token_in, symbol_in, sell_implied)
 
 
 # ── Compra ────────────────────────────────────────────────────────────────────
+
+def _auto_close_stale():
+    """Cierra posiciones abiertas hace más de SIM_MAX_HOLD_MIN minutos sin señal de venta."""
+    now = time.time()
+    stale = [
+        (mint, pos) for mint, pos in list(_positions.items())
+        if pos.get("opened_at") and (now - pos["opened_at"]) / 60 > SIM_MAX_HOLD_MIN
+        and pos.get("entry_price")  # ignorar placeholders vacíos
+    ]
+    for mint, pos in stale:
+        symbol = pos.get("symbol", mint[:6])
+        label  = pos.get("wallet_label", "?")
+        price  = _get_price(mint) or pos["entry_price"]  # precio actual o entrada si no hay
+        log.info(
+            f"[SIM] ⏰ AUTO-CLOSE [yellow]{symbol}[/] — "
+            f"abierta {SIM_MAX_HOLD_MIN:.0f}+ min sin señal de venta → cierre forzado"
+        )
+        _handle_sell(label, label, mint, symbol, price)
+
 
 def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
                 wallet_buy_time: float | None = None, implied_price: float = 0.0):
     """Abre posición simulada al precio actual usando % del balance."""
     global _sim_balance
 
+    # Cerrar posiciones que llevan demasiado tiempo abiertas sin señal de venta
+    _auto_close_stale()
+
     with _lock:
-        # Ya tenemos posición en este token — igual que el executor real
-        if _positions.get(token_mint):
+        existing = _positions.get(token_mint)
+
+        # Posición ya abierta con precio real → escalar si nueva wallet confirma
+        if existing and existing.get("entry_price"):
+            confirmations = existing.get("confirmations", 1)
+            if confirmations < SIM_MAX_CONFIRMATIONS and _sim_balance > SIM_LIQUIDATION:
+                extra = round(_get_trade_amount() * 0.5, 4)
+                existing["amount_usd"]    = round(existing["amount_usd"] + extra, 4)
+                existing["confirmations"] = confirmations + 1
+                _save_positions()
+                log.info(
+                    f"[SIM] 🔥 CONFIRMACIÓN #{confirmations + 1} | "
+                    f"[cyan]{label}[/] también compró [yellow]{symbol}[/] | "
+                    f"añadido [green]+${extra:.2f}[/] → posición total: "
+                    f"[green]${existing['amount_usd']:.2f}[/]"
+                )
             return
+
+        # Placeholder o posición sin precio → ya en proceso, ignorar
+        if existing:
+            return
+
         # Reservar el slot inmediatamente para evitar race conditions
         _positions[token_mint] = {}  # placeholder
 
@@ -310,7 +362,8 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
 
 # ── Venta ─────────────────────────────────────────────────────────────────────
 
-def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str):
+def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str,
+                 implied_price: float = 0.0):
     """Cierra posición simulada, actualiza balance y calcula P&L."""
     global _sim_balance
 
@@ -325,9 +378,13 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str):
 
     price_exit = _get_price(token_mint)
     if not price_exit:
-        log.debug(f"[SIM] No hay precio de salida para {symbol} — no se cierra")
-        _positions[token_mint] = pos
-        return
+        if implied_price > 0:
+            # Precio real de la wallet — más preciso que DexScreener para tokens nuevos
+            price_exit = implied_price
+        else:
+            # Sin precio disponible — cerrar al precio de entrada (solo paga fees)
+            price_exit = pos["entry_price"]
+            log.debug(f"[SIM] {symbol} sin precio en DexScreener ni implied — cierre al precio de entrada")
 
     entry      = pos["entry_price"]
     amount_usd = pos["amount_usd"]
