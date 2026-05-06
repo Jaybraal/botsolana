@@ -47,6 +47,9 @@ _failed_buy_attempts: dict[str, int] = {}
 _circuit_breaker_triggered: bool = False
 _initial_live_balance: int | None = None  # lamports al primer trade exitoso en LIVE_MODE
 
+# Cooldown: {token: timestamp_de_ultima_venta} — evita reabrir tokens vendidos hace <2 min
+_recent_sells: dict[str, float] = {}
+
 # Balance inicial de SOL (lamports) — se registra en el primer trade en vivo
 _initial_balance: int = 0
 
@@ -335,6 +338,13 @@ def execute_copy(swap: dict) -> bool:
             log.debug(f"[{label}] {swap['symbol_out']} ya falló 2 veces — ignorando para ahorrar fees")
             return False
 
+        # PROTECCIÓN 4: Cooldown de 2 min — evita reabrir tokens que acaban de venderse
+        # Si fue vendido hace <2 min, significa que el trade fue muy corto y probablemente pérdida
+        last_sell_time = _recent_sells.get(token_out, 0)
+        if last_sell_time and (time.time() - last_sell_time) < 120:  # 2 minutos
+            log.debug(f"[{label}] {swap['symbol_out']} vendido hace {time.time() - last_sell_time:.0f}s — cooldown activo")
+            return False
+
         # PROTECCIÓN 3: Verificar liquidez mínima en DexScreener ($500 USD)
         from utils.dexscreener import get_best_pair
         _pair_info = get_best_pair(token_out)
@@ -512,6 +522,7 @@ def execute_copy(swap: dict) -> bool:
 
         pos = _open_copies.pop(token_in, {})
         _failed_buy_attempts.pop(token_in, None)  # Limpiar contador de intentos fallidos
+        _recent_sells[token_in] = time.time()  # Registrar venta para cooldown de 2 min
         hold_min = (time.time() - pos.get("opened", time.time())) / 60
         _append_copytrade({
             "timestamp":    time.time(),
