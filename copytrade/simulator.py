@@ -297,21 +297,38 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
     opened_at = wallet_buy_time if wallet_buy_time else detected_at
     latency_s = detected_at - opened_at if wallet_buy_time else 0
 
+    # ⚠️ LATENCY DELAY SIMULATION (crítico para realismo)
+    # En live trading, hay un delay mínimo de 1.5s entre detección y ejecución:
+    # - 0.5-1s: detectar + procesar en Watcher
+    # - 0.2s: validaciones en Executor
+    # - 0.5s: pedir quote a Jupiter/PumpPortal
+    # - 0.3s: firmar y enviar TX
+    # En ese tiempo, el precio SUBE en bonding curve (compra más cara)
+    REALISTIC_LATENCY_S = 1.5  # segundos reales
+    price_rise_per_second = 0.015  # 1.5% por segundo en BC durante pump inicial
+    latency_price_impact = REALISTIC_LATENCY_S * price_rise_per_second  # cuánto sube el precio
+
     # Precio: DexScreener primero (precio actual de mercado), implied como fallback.
-    # Si usamos implied_price (token nuevo, aún sin indexar), lo inflamos por latencia:
-    # en esos 2-3s de detección el precio ya subió — en live pagaríamos más caro.
     dex_price = _get_price(token_mint)
     if dex_price:
-        price = dex_price
+        # Incluso si usamos DexScreener (token indexado), el precio subió desde que Theo compró
+        # Aplicamos el impacto de latencia realista
+        price = dex_price * (1 + latency_price_impact)
+        log.debug(
+            f"[SIM] {symbol} — precio ajustado por latencia real {REALISTIC_LATENCY_S:.1f}s: "
+            f"+{latency_price_impact*100:.1f}% (DexScreener)"
+        )
     elif implied_price:
         # El token aún no está en DexScreener — usamos el precio del swap de la wallet.
         # Pero ese precio es de hace `latency_s` segundos; en live compraríamos más caro.
-        latency_penalty = min(latency_s * 0.03, 0.30) if latency_s > 1 else 0.0
+        # Sumamos: latencia de detección + latencia realista de ejecución
+        total_latency = latency_s + REALISTIC_LATENCY_S if latency_s > 0 else REALISTIC_LATENCY_S
+        latency_penalty = min(total_latency * price_rise_per_second, 0.30)
         price = implied_price * (1 + latency_penalty)
         if latency_penalty > 0:
             log.debug(
-                f"[SIM] {symbol} sin DexScreener — precio ajustado por latencia "
-                f"{latency_s:.0f}s: +{latency_penalty*100:.0f}%"
+                f"[SIM] {symbol} — precio ajustado por latencia "
+                f"{total_latency:.1f}s (detección + ejecución): +{latency_penalty*100:.1f}%"
             )
     else:
         price = None
