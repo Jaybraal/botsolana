@@ -57,6 +57,11 @@ MAX_OPEN_COPIES = int(os.getenv("MAX_OPEN_COPIES", "999"))
 # 0.70 = parar si perdemos más del 30% del capital de inicio.
 STOP_LOSS_PCT   = float(os.getenv("STOP_LOSS_PCT",  "0.70"))
 
+# Pérdida máxima en la sesión actual — circuit breaker de seguridad.
+# Si el balance cae más de este % desde el primer trade, todos los trades se detienen automáticamente.
+# 0.20 = parar si perdemos >20% en la sesión actual.
+MAX_SESSION_LOSS_PCT = float(os.getenv("MAX_SESSION_LOSS_PCT", "0.20"))
+
 # Reserva mínima de SOL que nunca se toca (para pagar fees de red).
 # 0.01 SOL ≈ $1.50 — cubre ~100 transacciones de Solana.
 MIN_RESERVE_SOL = float(os.getenv("MIN_RESERVE_SOL", "0.01"))

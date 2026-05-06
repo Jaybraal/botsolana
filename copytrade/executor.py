@@ -19,7 +19,7 @@ from solana.rpc.types import TokenAccountOpts, TxOpts
 from config import (
     RPC_HTTP, WALLET_PUBKEY, WALLET_PRIVKEY, SLIPPAGE_BPS,
     PROPORTIONAL_MODE, MAX_TRADE_PCT, MIN_TRADE_SOL, MAX_OPEN_COPIES,
-    STOP_LOSS_PCT, MIN_RESERVE_SOL, MAX_PRICE_IMPACT, SCALING_TIERS,
+    STOP_LOSS_PCT, MIN_RESERVE_SOL, MAX_PRICE_IMPACT, MAX_SESSION_LOSS_PCT, SCALING_TIERS,
     TOKENS,
 )
 from utils.jupiter import get_quote, get_swap_transaction, calc_price_impact, out_amount
@@ -42,6 +42,10 @@ _open_copies: dict[str, dict] = {}
 
 # Contador de intentos fallidos de compra por token — protección contra fees repetidas
 _failed_buy_attempts: dict[str, int] = {}
+
+# Circuit breaker de seguridad — detiene todos los trades si se pierde demasiado en la sesión
+_circuit_breaker_triggered: bool = False
+_initial_live_balance: int | None = None  # lamports al primer trade exitoso en LIVE_MODE
 
 # Balance inicial de SOL (lamports) — se registra en el primer trade en vivo
 _initial_balance: int = 0
@@ -303,6 +307,13 @@ def execute_copy(swap: dict) -> bool:
 
     # ── Compra ───────────────────────────────────────────────────────────────
     if is_buy:
+        global _circuit_breaker_triggered, _initial_live_balance
+
+        # SEGURIDAD: Circuit breaker — detener si la sesión ya perdió demasiado
+        if _circuit_breaker_triggered:
+            log.warning("[SEGURIDAD] Circuit breaker activo — trading detenido. Reinicia el bot para continuar.")
+            return False
+
         token_out = swap["token_out"]
 
         # No abrir más posiciones si ya estamos al límite (tokens recuperados no cuentan)
@@ -339,6 +350,21 @@ def execute_copy(swap: dict) -> bool:
 
         # Registrar capital inicial (sólo la primera vez)
         _ensure_initial_balance()
+
+        # Circuit breaker de sesión: inicializar balance al primer trade en LIVE_MODE
+        if _initial_live_balance is None:
+            _initial_live_balance = our_balance
+
+        # Verificar pérdida máxima en la sesión actual — seguridad automática
+        if _initial_live_balance > 0:
+            session_loss = 1 - (our_balance / _initial_live_balance)
+            if session_loss >= MAX_SESSION_LOSS_PCT:
+                _circuit_breaker_triggered = True
+                log.warning(
+                    f"🚨 CIRCUIT BREAKER ACTIVADO — Pérdida de sesión: {session_loss*100:.1f}% "
+                    f"(máx: {MAX_SESSION_LOSS_PCT*100:.0f}%) — TODOS LOS TRADES DETENIDOS"
+                )
+                return False
 
         # Stop-loss global: parar si perdimos demasiado
         if _is_stop_loss_triggered(our_balance):
