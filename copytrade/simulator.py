@@ -4,7 +4,7 @@ Simulador de P&L realista — replica exactamente lo que pasaría en live.
 Reglas de realismo:
 - Capital inicial = SIM_CAPITAL (valor real en USD de tu wallet)
 - Trade size = mismo % que en live: MAX_TRADE_PCT + SCALING_TIERS de config.py
-- Slippage = SIM_SLIPPAGE_PCT por leg (compra + venta) — defecto 8% (Pump.fun BC real)
+- Slippage = SIM_SLIPPAGE_PCT por leg (compra + venta) — defecto 1.5% (realista para trades <$100)
 - Fee = SIM_PRIORITY_FEE_SOL * precio_sol (round-trip real)
 - El balance compone igual que en live: a mayor ganancia, mayor % por trade
 """
@@ -56,19 +56,18 @@ SIM_INITIAL_CAPITAL  = float(os.getenv("SIM_CAPITAL",         "50.0"))
 SIM_MIN_TRADE        = float(os.getenv("SIM_MIN_TRADE",        "0.50"))   # mínimo $0.50 por trade
 SIM_LIQUIDATION      = float(os.getenv("SIM_LIQUIDATION",      "2.0"))    # pausar si balance < $2
 SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004")) # 0.0002 SOL × 2 round-trip
-SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.08"))  # 8% por leg (Pump.fun BC)
+SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.015"))  # 1.5% por leg — realista para trades <$100 en Pump.fun
 
 # Tiers de tamaño por trade según balance — escala progresivamente conforme crece el capital.
-# Parte de $5/trade con $50 de capital y sube hasta $100/trade a partir de $5k.
 # (balance_mínimo, tope_usd_por_trade)
 TRADE_CAP_TIERS: list[tuple[float, float]] = [
-    (0,     5.0),   # $0–$100    → $5/trade    (~5-10%)
-    (100,  10.0),   # $100–$300  → $10/trade   (~3-10%)
-    (300,  20.0),   # $300–$600  → $20/trade   (~3-7%)
-    (600,  35.0),   # $600–$1k   → $35/trade   (~3-6%)
-    (1000, 50.0),   # $1k–$2k    → $50/trade   (~2-5%)
-    (2000, 75.0),   # $2k–$5k    → $75/trade   (~1.5-3.8%)
-    (5000, 100.0),  # $5k+       → $100/trade  (~1-2%)
+    (0,     5.0),   # $0–$100    → $5/trade
+    (100,  15.0),   # $100–$300  → $15/trade
+    (300,  35.0),   # $300–$600  → $35/trade
+    (600,  60.0),   # $600–$1k   → $60/trade
+    (1000, 90.0),   # $1k–$2k    → $90/trade
+    (2000, 130.0),  # $2k–$5k    → $130/trade
+    (5000, 200.0),  # $5k+       → $200/trade
 ]
 
 # Tokens que son "dinero" (SOL, USDC, USDT)
