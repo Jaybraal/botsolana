@@ -40,6 +40,9 @@ LAMPORTS_PER_SOL = 1_000_000_000
 # Tracking en memoria de posiciones abiertas: {token_mint: {"symbol": str, "opened": float}}
 _open_copies: dict[str, dict] = {}
 
+# Contador de intentos fallidos de compra por token — protección contra fees repetidas
+_failed_buy_attempts: dict[str, int] = {}
+
 # Balance inicial de SOL (lamports) — se registra en el primer trade en vivo
 _initial_balance: int = 0
 
@@ -316,6 +319,19 @@ def execute_copy(swap: dict) -> bool:
             log.warning(f"[{label}] Ya tenemos {swap['symbol_out']} abierto — ignorando entrada adicional")
             return False
 
+        # PROTECCIÓN 1: No reintentar tokens que fallaron 2+ veces (evita gastar fees repetidamente)
+        if _failed_buy_attempts.get(token_out, 0) >= 2:
+            log.debug(f"[{label}] {swap['symbol_out']} ya falló 2 veces — ignorando para ahorrar fees")
+            return False
+
+        # PROTECCIÓN 3: Verificar liquidez mínima en DexScreener ($500 USD)
+        from utils.dexscreener import get_best_pair
+        _pair_info = get_best_pair(token_out)
+        _liquidity_usd = float((_pair_info or {}).get("liquidity", {}).get("usd", 0))
+        if _pair_info and _liquidity_usd < 500:
+            log.warning(f"[{label}] Liquidez ${_liquidity_usd:.0f} < $500 — abortando para evitar slippage extremo")
+            return False
+
         our_balance = get_our_sol_balance()
         if our_balance == 0:
             log.error("No se pudo obtener balance SOL propio.")
@@ -356,6 +372,17 @@ def execute_copy(swap: dict) -> bool:
             f"Balance: {our_balance / LAMPORTS_PER_SOL:.3f} SOL"
         )
 
+        # PROTECCIÓN 2: Pre-check de price impact ANTES de enviar TX (evita TX que van a fallar)
+        # Solo aplica si Jupiter tiene ruta — si no (token muy nuevo), deja pasar
+        from utils.jupiter import get_quote, calc_price_impact
+        _pre_quote = get_quote(swap["token_in"], token_out, amount_lamports)
+        if _pre_quote and calc_price_impact(_pre_quote) > MAX_PRICE_IMPACT:
+            log.warning(
+                f"[{label}] Price impact {calc_price_impact(_pre_quote):.2f}% > {MAX_PRICE_IMPACT}% — "
+                f"abortando para evitar TX fallida con pérdida de fees"
+            )
+            return False
+
         is_pumpfun_bc  = swap.get("program") == "Pump.fun"
         is_pumpswap    = swap.get("program") == "PumpSwap"
         sig = None
@@ -375,6 +402,7 @@ def execute_copy(swap: dict) -> bool:
 
         if not sig:
             log.warning(f"[{label}] No se pudo ejecutar buy — {swap['symbol_out']} (programa: {swap.get('program','')})")
+            _failed_buy_attempts[token_out] = _failed_buy_attempts.get(token_out, 0) + 1
             return False
 
         _open_copies[token_out] = {"symbol": swap["symbol_out"], "opened": time.time(), "program": swap.get("program", "")}
@@ -457,6 +485,7 @@ def execute_copy(swap: dict) -> bool:
             return False
 
         pos = _open_copies.pop(token_in, {})
+        _failed_buy_attempts.pop(token_in, None)  # Limpiar contador de intentos fallidos
         hold_min = (time.time() - pos.get("opened", time.time())) / 60
         _append_copytrade({
             "timestamp":    time.time(),
