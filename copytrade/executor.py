@@ -531,8 +531,8 @@ def _send_pumpfun_buy(mint: str, amount_lamports: int, keypair: Keypair) -> str 
 
 
 def _send_pumpfun_buy_pumpswap(mint: str, amount_lamports: int, keypair: Keypair) -> str | None:
-    """Compra via PumpPortal en PumpSwap AMM (token graduado). Retorna signature o None."""
-    from utils.pumpfun import get_pump_buy_tx as _buy_tx
+    """Compra en PumpSwap AMM (token graduado). Usa multi-backend con fallbacks automáticos."""
+    from utils.pumpfun import _multi_backend
     amount_sol = amount_lamports / LAMPORTS_PER_SOL
     payload = {
         "publicKey":        WALLET_PUBKEY,
@@ -544,16 +544,10 @@ def _send_pumpfun_buy_pumpswap(mint: str, amount_lamports: int, keypair: Keypair
         "priorityFee":      0.0002,
         "pool":             "pumpswap",
     }
-    import httpx
-    try:
-        r = httpx.post("https://pumpportal.fun/api/trade-local", json=payload, timeout=15)
-        if r.status_code != 200 or not r.content:
-            log.warning(f"PumpPortal buy pumpswap HTTP {r.status_code}: {r.text[:150]}")
-            return None
-        return _sign_and_send(r.content, keypair, f"PumpPortal buy [pumpswap] {mint[:8]}...")
-    except Exception as e:
-        log.warning(f"PumpPortal buy pumpswap error: {e}")
+    tx_bytes = _multi_backend(payload, f"buy pumpswap {mint[:8]}")
+    if not tx_bytes:
         return None
+    return _sign_and_send(tx_bytes, keypair, f"PumpSwap buy [multi-backend] {mint[:8]}...")
 
 
 def _send_pumpfun_sell(mint: str, ui_amount: float, keypair: Keypair, pool: str = "pump") -> str | None:
