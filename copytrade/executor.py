@@ -20,7 +20,7 @@ from config import (
     RPC_HTTP, WALLET_PUBKEY, WALLET_PRIVKEY, SLIPPAGE_BPS,
     PROPORTIONAL_MODE, MAX_TRADE_PCT, MIN_TRADE_SOL, MAX_OPEN_COPIES,
     STOP_LOSS_PCT, MIN_RESERVE_SOL, MAX_PRICE_IMPACT, MAX_SESSION_LOSS_PCT, SCALING_TIERS,
-    TOKENS,
+    TOKENS, get_max_trade_pct_by_balance,
 )
 from utils.jupiter import get_quote, get_swap_transaction, calc_price_impact, out_amount
 from utils.pumpfun import get_pump_buy_tx, get_pump_sell_tx
@@ -174,26 +174,31 @@ def _is_stop_loss_triggered(current_balance: int) -> bool:
     return False
 
 
+def _get_sol_price_usd() -> float:
+    """Obtiene el precio actual de SOL en USD. Retorna $20 por defecto si falla."""
+    try:
+        import httpx
+        resp = httpx.get("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd", timeout=3)
+        if resp.status_code == 200:
+            return float(resp.json().get("solana", {}).get("usd", 20))
+    except Exception:
+        pass
+    return 20.0  # fallback
+
 def _get_dynamic_trade_pct(current_balance: int) -> float:
     """
-    Retorna el % máximo por trade según la ganancia acumulada sobre el capital inicial.
-    Cuanto más ganás, el techo por trade sube — pero siempre usando las ganancias,
-    no el capital base de $20.
+    Retorna el % máximo por trade según el balance actual en USD.
+    Tabla de riesgo dinámico según balance:
+    - $50–$200: 25%
+    - $200–$1k: 12%
+    - $1k–$5k: 7%
+    - $5k+: 3%
     """
-    if _initial_balance == 0:
-        return MAX_TRADE_PCT
-    profit_pct = (current_balance - _initial_balance) / _initial_balance
-    # Recorrer tiers de mayor a menor y devolver el primero que aplique
-    for min_profit, trade_pct in reversed(SCALING_TIERS):
-        if profit_pct >= min_profit:
-            if trade_pct > MAX_TRADE_PCT:
-                log.info(
-                    f"[ESCALADO] Ganancia acumulada: [green]{profit_pct*100:+.1f}%[/] → "
-                    f"techo por trade: [bold white]{trade_pct*100:.0f}%[/] "
-                    f"(base era {MAX_TRADE_PCT*100:.0f}%)"
-                )
-            return trade_pct
-    return MAX_TRADE_PCT
+    sol_price_usd = _get_sol_price_usd()
+    balance_sol = current_balance / LAMPORTS_PER_SOL
+    balance_usd = balance_sol * sol_price_usd
+    trade_pct = get_max_trade_pct_by_balance(balance_usd)
+    return trade_pct
 
 
 # ── Persistencia ─────────────────────────────────────────────────────────────

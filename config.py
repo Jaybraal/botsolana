@@ -41,8 +41,31 @@ SLIPPAGE_BPS     = int(os.getenv("SLIPPAGE_BPS", "75"))   # 75 = 0.75% (optimiza
 # Ej: wallet tenía 10 SOL y metió 0.5 SOL (5%) → nosotros metemos 5% de nuestro balance.
 PROPORTIONAL_MODE = os.getenv("PROPORTIONAL_MODE", "true").lower() == "true"
 
-# Tope máximo: nunca gastar más de este % de nuestro balance en un solo trade.
-# Protege contra wallets que van all-in de golpe.
+# Tope máximo: basado en balance actual (risk management).
+# Tabla dinámica según rango del balance en SOL:
+# - $50–$200 (2.5k–10k SOL a $20): 25% por trade
+# - $200–$1k (10k–50k SOL): 12% por trade
+# - $1k–$5k (50k–250k SOL): 7% por trade
+# - $5k+ (250k+ SOL): 3% por trade
+RISK_TIERS: list[tuple[float, float]] = [
+    (50, 0.25),      # $50-$200: 25%
+    (200, 0.12),     # $200-$1k: 12%
+    (1000, 0.07),    # $1k-$5k: 7%
+    (float('inf'), 0.03),  # $5k+: 3%
+]
+
+def get_max_trade_pct_by_balance(balance_usd: float) -> float:
+    """Retorna el % máximo por trade según el balance en USD."""
+    if balance_usd >= 5000:
+        return 0.03    # $5k+: 3%
+    elif balance_usd >= 1000:
+        return 0.07    # $1k–$5k: 7%
+    elif balance_usd >= 200:
+        return 0.12    # $200–$1k: 12%
+    else:
+        return 0.25    # $50–$200: 25%
+
+# Fallback para compatibilidad — se usa si no hay balance calculado
 MAX_TRADE_PCT  = float(os.getenv("MAX_TRADE_PCT",  "0.05"))  # 5% máximo por trade
 
 # Mínimo en lamports por trade (evita trades de polvo que no cubren las fees).

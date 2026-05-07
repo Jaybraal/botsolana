@@ -17,7 +17,7 @@ import time
 import threading
 from datetime import datetime
 
-from config import MAX_TRADE_PCT, SCALING_TIERS
+from config import MAX_TRADE_PCT, SCALING_TIERS, get_max_trade_pct_by_balance
 from utils.dexscreener import get_best_pair
 from utils.market_context import get_context
 from utils.logger import get_logger
@@ -152,14 +152,8 @@ _lock = threading.Lock()  # protege _positions contra race conditions
 # ── Capital dinámico ──────────────────────────────────────────────────────────
 
 def _get_trade_pct() -> float:
-    """Mismo escalado que executor._get_dynamic_trade_pct, expresado en USD."""
-    if SIM_INITIAL_CAPITAL <= 0:
-        return MAX_TRADE_PCT
-    profit_pct = (_sim_balance - SIM_INITIAL_CAPITAL) / SIM_INITIAL_CAPITAL
-    for min_profit, trade_pct in reversed(SCALING_TIERS):
-        if profit_pct >= min_profit:
-            return trade_pct
-    return MAX_TRADE_PCT
+    """Retorna % máximo por trade según balance actual en USD."""
+    return get_max_trade_pct_by_balance(_sim_balance)
 
 
 def _get_trade_cap_usd() -> float:
@@ -333,14 +327,20 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
             confirmations = existing.get("confirmations", 1)
             if confirmations < SIM_MAX_CONFIRMATIONS and _sim_balance > SIM_LIQUIDATION:
                 extra = round(_get_trade_amount() * 0.5, 4)
-                existing["amount_usd"]    = round(existing["amount_usd"] + extra, 4)
+                old_amount = existing["amount_usd"]
+                old_price = existing["entry_price"]
+                new_amount = round(old_amount + extra, 4)
+                # Promediar el precio de entrada según el tamaño de cada tranche
+                new_price = (old_price * old_amount + price * extra) / new_amount if new_amount > 0 else old_price
+                existing["amount_usd"]    = new_amount
+                existing["entry_price"]   = round(new_price, 10)  # precisión para precios pequeños
                 existing["confirmations"] = confirmations + 1
                 _save_positions()
                 log.info(
                     f"[SIM] 🔥 CONFIRMACIÓN #{confirmations + 1} | "
                     f"[cyan]{label}[/] también compró [yellow]{symbol}[/] | "
                     f"añadido [green]+${extra:.2f}[/] → posición total: "
-                    f"[green]${existing['amount_usd']:.2f}[/]"
+                    f"[green]${new_amount:.2f}[/] (precio promedio: ${new_price:.10f})"
                 )
             return
 
