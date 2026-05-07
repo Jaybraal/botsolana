@@ -10,7 +10,9 @@ Reglas de realismo:
 """
 
 import json
+import math
 import os
+import random
 import time
 import threading
 from datetime import datetime
@@ -59,6 +61,14 @@ SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004")) # 0.00
 SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.015"))  # 1.5% por leg — realista para trades <$100 en Pump.fun
 SIM_MAX_HOLD_MIN     = float(os.getenv("SIM_MAX_HOLD_MIN",      "20"))     # auto-close si la wallet no vende en N minutos
 SIM_MAX_CONFIRMATIONS = int(os.getenv("SIM_MAX_CONFIRMATIONS",  "3"))      # max wallets que pueden escalar la misma posición
+
+# Realismo brutal — 5 mejoras cuantitativas
+SIM_DYNAMIC_LIQUIDITY_LIMIT = os.getenv("SIM_DYNAMIC_LIQUIDITY_LIMIT", "true").lower() == "true"
+SIM_DYNAMIC_SLIPPAGE        = os.getenv("SIM_DYNAMIC_SLIPPAGE", "true").lower() == "true"
+SIM_MARKET_IMPACT           = os.getenv("SIM_MARKET_IMPACT", "true").lower() == "true"
+SIM_SMART_FAIL_RATE         = os.getenv("SIM_SMART_FAIL_RATE", "true").lower() == "true"
+SIM_BASE_FAIL_RATE          = float(os.getenv("SIM_BASE_FAIL_RATE", "0.08"))  # 8% baseline
+SIM_EXTENDED_METRICS        = os.getenv("SIM_EXTENDED_METRICS", "true").lower() == "true"
 
 # Tiers de tamaño por trade según balance — escala progresivamente conforme crece el capital.
 # (balance_mínimo, tope_usd_por_trade)
@@ -164,6 +174,67 @@ def _get_trade_cap_usd() -> float:
 def _get_trade_amount() -> float:
     amount = _sim_balance * _get_trade_pct()
     return min(amount, _get_trade_cap_usd())
+
+
+# ── Realismo brutal: helpers cuantitativos ─────────────────────────────────
+
+def _get_dynamic_liquidity_limit(liquidity_usd: float) -> float:
+    """Ratio dinámico según tamaño del pool — más conservador en microcaps."""
+    if not SIM_DYNAMIC_LIQUIDITY_LIMIT or liquidity_usd <= 0:
+        return 0.01
+    if liquidity_usd < 10000:
+        return 0.003   # 0.3% en pools muy pequeños
+    elif liquidity_usd < 50000:
+        return 0.007   # 0.7% en pools medianos
+    else:
+        return 0.010   # 1.0% en pools grandes
+
+
+def _calc_slippage_dynamic(trade_usd: float, liquidity_usd: float, is_sell: bool = False) -> float:
+    """Slippage dinámico basado en ratio trade/liquidity.
+    BUY cap: 30%, SELL cap: 50% (vender es peor).
+    """
+    if not SIM_DYNAMIC_SLIPPAGE or liquidity_usd <= 0:
+        return SIM_SLIPPAGE_PCT
+
+    impact_ratio = trade_usd / liquidity_usd
+    dynamic = SIM_SLIPPAGE_PCT + impact_ratio * 0.5
+
+    cap = 0.50 if is_sell else 0.30
+    return min(dynamic, cap)
+
+
+def _calc_market_impact(trade_usd: float, liquidity_usd: float) -> float:
+    """Market impact NO lineal (raíz cuadrada) — más realista en AMMs.
+    Impacto cresce exponencialmente, no linealmente.
+    """
+    if not SIM_MARKET_IMPACT or liquidity_usd <= 0:
+        return 0.0
+
+    ratio = trade_usd / liquidity_usd
+    impact = math.sqrt(ratio) * 0.35
+    return min(impact, 0.40)  # cap 40%
+
+
+def _calc_fail_rate(liquidity_usd: float, volatility_pct: float = 10.0) -> float:
+    """TX fail rate inteligente basado en liquidez + volatilidad.
+    Pools pequeños y mercados volátiles → más fallos.
+    """
+    if not SIM_SMART_FAIL_RATE:
+        return SIM_BASE_FAIL_RATE
+
+    # Penalidad por liquidez baja
+    liq_penalty = 0.0
+    if liquidity_usd < 10000:
+        liq_penalty = 0.05  # +5%
+    elif liquidity_usd < 50000:
+        liq_penalty = 0.02  # +2%
+
+    # Penalidad por volatilidad
+    vol_penalty = max(0, (volatility_pct - 5.0) / 100) * 0.03  # hasta +3%
+
+    fail_rate = SIM_BASE_FAIL_RATE + liq_penalty + vol_penalty
+    return min(fail_rate, 0.20)  # cap 20%
 
 
 def _get_price(mint: str) -> float | None:
@@ -339,6 +410,36 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
     entry_context = get_context(token_mint)
     tier_pct      = _get_trade_pct()
 
+    # ⚠️ TEST #1: Límite de liquidez dinámico
+    liquidity_usd = entry_context.get("liquidity_usd", 0) if entry_context else 0
+    if liquidity_usd > 0:
+        max_ratio = _get_dynamic_liquidity_limit(liquidity_usd)
+        max_trade = liquidity_usd * max_ratio
+        if trade_amount > max_trade:
+            log.info(
+                f"[SIM] 🛑 Trade reducido por liquidez | {symbol} | "
+                f"pool ${liquidity_usd:,.0f} × {max_ratio:.1%} = ${max_trade:.2f} máx | "
+                f"solicitado ${trade_amount:.2f} → [yellow]${max_trade:.2f}[/]"
+            )
+            trade_amount = max_trade
+            if trade_amount < SIM_MIN_TRADE:
+                log.debug(f"[SIM] Trade reducido quedó < mínimo ${SIM_MIN_TRADE} — cancelado")
+                return
+
+    # ⚠️ TEST #4: TX fail rate inteligente
+    volatility_pct = abs(entry_context.get("change_1h_pct", 0)) if entry_context else 10.0
+    fail_rate = _calc_fail_rate(liquidity_usd, volatility_pct)
+    if random.random() < fail_rate:
+        fee_usd = SIM_PRIORITY_FEE_SOL * _get_sol_price_usd()
+        _sim_balance = max(0.0, _sim_balance - fee_usd)
+        _save_balance()
+        log.warning(
+            f"[SIM] 💥 TX FALLIDA | [yellow]{symbol}[/] | "
+            f"fail_rate {fail_rate:.1%} (liq ${liquidity_usd:,.0f}, vol {volatility_pct:+.1f}%) | "
+            f"pagó fee ${fee_usd:.4f} → balance: ${_sim_balance:.2f}"
+        )
+        return
+
     pos = {
         "token_mint":      token_mint,
         "symbol":          symbol,
@@ -367,12 +468,13 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
         )
 
     latency_str = f" | delay [white]{latency_s:.0f}s[/]" if latency_s > 0.5 else ""
-    slippage_cost = trade_amount * SIM_SLIPPAGE_PCT
+    slippage_pct = _calc_slippage_dynamic(trade_amount, liquidity_usd, is_sell=False)
+    slippage_cost = trade_amount * slippage_pct
     log.info(
         f"[SIM] 📥 ENTRADA | [cyan]{label}[/] compró [yellow]{symbol}[/] | "
         f"precio: [white]${price:.8f}[/] | "
         f"trade: [green]${trade_amount:.2f}[/] ({tier_pct*100:.0f}% de ${_sim_balance:.2f} balance) | "
-        f"slip_entrada: [dim]-${slippage_cost:.3f} ({SIM_SLIPPAGE_PCT*100:.0f}%)[/]"
+        f"slip_entrada: [dim]-${slippage_cost:.3f} ({slippage_pct*100:.1f}%)[/]"
         f"{ctx_str}{latency_str}"
     )
 
@@ -405,26 +507,36 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str,
 
     entry      = pos["entry_price"]
     amount_usd = pos["amount_usd"]
+    entry_context = pos.get("entry_context", {})
+
+    # ⚠️ TEST #2: Slippage dinámico (con cap diferenciado para SELL)
+    entry_liquidity = entry_context.get("liquidity_usd", 0) if entry_context else 0
+    exit_context = get_context(token_mint)
+    exit_liquidity = exit_context.get("liquidity_usd", 0) if exit_context else entry_liquidity
+
+    slippage_entry = _calc_slippage_dynamic(amount_usd, entry_liquidity, is_sell=False)
+    slippage_exit = _calc_slippage_dynamic(amount_usd, exit_liquidity, is_sell=True)
+
+    # ⚠️ TEST #3: Market impact NO lineal (raíz cuadrada) — solo en venta
+    market_impact = _calc_market_impact(amount_usd, exit_liquidity)
 
     # Ajuste de slippage: compramos peor y vendemos peor que el precio de mercado
-    entry_adj     = entry * (1 + SIM_SLIPPAGE_PCT)
-    exit_adj      = price_exit * (1 - SIM_SLIPPAGE_PCT)
-    pnl_pct       = (exit_adj - entry_adj) / entry_adj * 100
-    pnl_usd       = amount_usd * pnl_pct / 100
+    entry_adj = entry * (1 + slippage_entry)
+    exit_adj = price_exit * (1 - slippage_exit) * (1 - market_impact)
+
+    pnl_pct = (exit_adj - entry_adj) / entry_adj * 100
+    pnl_usd = amount_usd * pnl_pct / 100
 
     # Fees reales: priority fee round-trip en USD
-    fee_usd  = SIM_PRIORITY_FEE_SOL * _get_sol_price_usd()
+    fee_usd = SIM_PRIORITY_FEE_SOL * _get_sol_price_usd()
     pnl_usd -= fee_usd
 
     won = pnl_usd > 0
 
     # Actualizar balance compuesto
     balance_before = _sim_balance
-    _sim_balance   = max(0.0, _sim_balance + pnl_usd)
+    _sim_balance = max(0.0, _sim_balance + pnl_usd)
     _save_balance()
-
-    exit_context  = get_context(token_mint)
-    entry_context = pos.get("entry_context", {})
 
     trade = {
         "symbol":          symbol,
@@ -461,12 +573,13 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str,
     color = "green" if won else "red"
     bal_color = "green" if _sim_balance >= SIM_INITIAL_CAPITAL else "red"
 
-    total_cost_pct = (SIM_SLIPPAGE_PCT * 2 * 100) + (fee_usd / amount_usd * 100)
+    total_cost_pct = (slippage_entry + slippage_exit + market_impact) * 100 + (fee_usd / amount_usd * 100)
+    impact_str = f" + impact {market_impact*100:.1f}%" if market_impact > 0 else ""
     log.info(
         f"[SIM] {icon} | [cyan]{label}[/] vendió [yellow]{symbol}[/] | "
         f"[{color}]{pnl_pct:+.1f}%[/] ([{color}]${pnl_usd:+.2f}[/]) | "
         f"entrada ${entry:.8f} → salida ${price_exit:.8f} | "
-        f"coste real: [dim]slip {SIM_SLIPPAGE_PCT*200:.0f}% + fee ${fee_usd:.3f} = {total_cost_pct:.1f}%[/] | "
+        f"coste real: [dim]slip {slippage_entry*100:.1f}% + {slippage_exit*100:.1f}%{impact_str} + fee ${fee_usd:.3f} = {total_cost_pct:.1f}%[/] | "
         f"{hold_min:.0f} min | balance: [{bal_color}]${_sim_balance:.2f}[/]"
     )
 
@@ -495,6 +608,30 @@ def _print_summary():
         f"ROI: [{'green' if roi_pct >= 0 else 'red'}]{roi_pct:+.1f}%[/]"
     )
 
+    # Métricas avanzadas cada 50 trades
+    if SIM_EXTENDED_METRICS and len(_history) % 50 == 0:
+        metrics = get_advanced_metrics()
+        if metrics and "profit_factor" in metrics:
+            pf = metrics["profit_factor"]
+            exp = metrics["expectancy"]
+            dd = metrics["max_drawdown_pct"]
+            avg_w = metrics["avg_winner_usd"]
+            avg_l = metrics["avg_loser_usd"]
+            sr = metrics.get("sharpe_ratio")
+
+            pf_color = "green" if pf >= 1.3 else "yellow" if pf >= 1.0 else "red"
+            exp_color = "green" if exp > 0 else "red"
+            dd_color = "green" if dd <= 25 else "yellow" if dd <= 40 else "red"
+
+            sr_str = f" | Sharpe: [white]{sr:.2f}[/]" if sr else ""
+            log.info(
+                f"[SIM] 🔥 MÉTRICAS AVANZADAS | "
+                f"Profit Factor: [{pf_color}]{pf:.2f}x[/] (objetivo >1.3) | "
+                f"Expectancy: [{exp_color}]${exp:+.2f}[/]/trade | "
+                f"Max DD: [{dd_color}]{dd:+.1f}%[/] | "
+                f"Avg W/L: ${avg_w:.2f}/${abs(avg_l):.2f}{sr_str}"
+            )
+
 
 def get_summary() -> dict:
     wins      = [t for t in _history if t["won"]]
@@ -511,4 +648,69 @@ def get_summary() -> dict:
         "roi_pct":         round(pnl_total / SIM_INITIAL_CAPITAL * 100, 1) if SIM_INITIAL_CAPITAL else 0,
         "open_positions":  open_pos,
         "history":         _history[-20:],
+    }
+
+
+def get_advanced_metrics() -> dict:
+    """Métricas profesionales de trading cuantitativo."""
+    if not _history:
+        return {}
+
+    wins = [t for t in _history if t["won"]]
+    losses = [t for t in _history if not t["won"]]
+
+    if not wins or not losses:
+        return {"note": "no hay suficientes trades"}
+
+    # Profit factor: métrica REINA
+    gross_profit = sum(t["pnl_usd"] for t in wins)
+    gross_loss = abs(sum(t["pnl_usd"] for t in losses))
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
+
+    # Promedio de ganador/perdedor
+    avg_winner = gross_profit / len(wins) if wins else 0
+    avg_loser = gross_loss / len(losses) if losses else 0
+
+    # Expectancy: el verdadero edge
+    win_rate = len(wins) / len(_history)
+    loss_rate = 1 - win_rate
+    expectancy = (win_rate * avg_winner) - (loss_rate * avg_loser)
+
+    # Max drawdown (peor caída equity)
+    equity_curve = [SIM_INITIAL_CAPITAL]
+    for trade in _history:
+        equity_curve.append(trade["balance_after"])
+
+    peak = equity_curve[0]
+    max_dd_usd = 0
+    max_dd_pct = 0
+    for equity in equity_curve:
+        if equity > peak:
+            peak = equity
+        dd = peak - equity
+        if dd > max_dd_usd:
+            max_dd_usd = dd
+            max_dd_pct = (dd / peak * 100) if peak > 0 else 0
+
+    # Sharpe ratio aproximado (si hay >10 trades)
+    if len(_history) > 10:
+        pnl_list = [t["pnl_pct"] for t in _history]
+        mean_pnl = sum(pnl_list) / len(pnl_list)
+        variance = sum((x - mean_pnl) ** 2 for x in pnl_list) / len(pnl_list)
+        std_pnl = math.sqrt(variance) if variance > 0 else 1.0
+        sharpe_approx = mean_pnl / std_pnl if std_pnl > 0 else 0
+    else:
+        sharpe_approx = None
+
+    return {
+        "profit_factor": round(profit_factor, 2),
+        "gross_profit_usd": round(gross_profit, 2),
+        "gross_loss_usd": round(gross_loss, 2),
+        "avg_winner_usd": round(avg_winner, 2),
+        "avg_loser_usd": round(avg_loser, 2),
+        "win_loss_ratio": round(avg_winner / abs(avg_loser), 2) if avg_loser != 0 else 0,
+        "expectancy": round(expectancy, 2),
+        "max_drawdown_usd": round(max_dd_usd, 2),
+        "max_drawdown_pct": round(max_dd_pct, 1),
+        "sharpe_ratio": round(sharpe_approx, 2) if sharpe_approx else None,
     }
