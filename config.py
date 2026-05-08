@@ -20,6 +20,7 @@ TARGET_WALLETS = [w.strip() for w in _raw.split(",") if w.strip()]
 
 # Etiquetas para los logs — identifica qué wallet/plataforma generó cada copy
 WALLET_LABELS: dict[str, str] = {
+    "Bi4rd5FH5bYEN8scZ7wevxNZyNmKHdaBcvewdPFxYdLt": "Theo",
     "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o": "Cented",
     "2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f": "Cupsey ⭐",
     "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9": "Decu",
