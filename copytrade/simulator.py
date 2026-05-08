@@ -59,7 +59,7 @@ SIM_MIN_TRADE        = float(os.getenv("SIM_MIN_TRADE",        "0.50"))   # mín
 SIM_LIQUIDATION      = float(os.getenv("SIM_LIQUIDATION",      "2.0"))    # pausar si balance < $2
 SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004")) # 0.0002 SOL × 2 round-trip
 SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.015"))  # 1.5% por leg — realista para trades <$100 en Pump.fun
-SIM_MAX_HOLD_MIN     = float(os.getenv("SIM_MAX_HOLD_MIN",      "20"))     # auto-close si la wallet no vende en N minutos
+SIM_MAX_HOLD_MIN     = float(os.getenv("SIM_MAX_HOLD_MIN",      "10000"))  # auto-close si la wallet no vende en N minutos (10000 = permite hold indefinido)
 SIM_MAX_CONFIRMATIONS = int(os.getenv("SIM_MAX_CONFIRMATIONS",  "3"))      # max wallets que pueden escalar la misma posición
 
 # Realismo brutal — 5 mejoras cuantitativas
