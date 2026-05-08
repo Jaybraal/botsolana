@@ -331,7 +331,7 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
                 old_price = existing["entry_price"]
                 new_amount = round(old_amount + extra, 4)
                 # Promediar el precio de entrada según el tamaño de cada tranche
-                new_price = (old_price * old_amount + price * extra) / new_amount if new_amount > 0 else old_price
+                new_price = (old_price * old_amount + implied_price * extra) / new_amount if new_amount > 0 else old_price
                 existing["amount_usd"]    = new_amount
                 existing["entry_price"]   = round(new_price, 10)  # precisión para precios pequeños
                 existing["confirmations"] = confirmations + 1
