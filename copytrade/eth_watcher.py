@@ -1,5 +1,5 @@
 """ETH Watcher — Monitorea wallets Ethereum via Etherscan API.
-Detecta transacciones de Uniswap y otras DEXs.
+Detecta transacciones de Uniswap y replica en simulador/live.
 """
 
 import asyncio
@@ -8,6 +8,7 @@ import os
 from datetime import datetime
 from utils.logger import get_logger
 from config import WALLET_LABELS
+from copytrade import eth_executor, eth_simulator
 
 log = get_logger("eth_watcher")
 
@@ -106,7 +107,28 @@ async def watch_eth_wallets(eth_wallets: list, poll_interval: int = None):
                             f"hash {tx_hash[:16]}... | "
                             f"Uniswap"
                         )
-                        # TODO: Ejecutar copy en Ethereum
+
+                        # Ejecutar copy en Ethereum (simulación o live)
+                        # Para esta prueba, asumimos que es un BUY
+                        # En producción: decodificar TX para saber si es BUY o SELL
+                        try:
+                            await eth_executor.execute_eth_swap(
+                                token_address="0x0000000000000000000000000000000000000001",  # placeholder
+                                symbol="ETH_TOKEN",  # placeholder
+                                wallet_label=label,
+                                is_buy=True,
+                                amount_usd=10.0,  # monto default para prueba
+                                slippage_bps=50,
+                            )
+                            eth_executor.record_eth_copytrade(
+                                token_address="0x0000000000000000000000000000000000000001",
+                                symbol="ETH_TOKEN",
+                                wallet_label=label,
+                                is_buy=True,
+                                simulated=not eth_executor.can_execute_eth_live(),
+                            )
+                        except Exception as e:
+                            log.error(f"Error ejecutando ETH copy trade: {e}")
 
             await asyncio.sleep(poll_interval)
 

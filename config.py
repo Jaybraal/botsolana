@@ -9,7 +9,11 @@ RPC_WS   = os.getenv("SOLANA_RPC_WS",  "wss://api.mainnet-beta.solana.com")
 # --- RPC Ethereum ---
 ETH_RPC_HTTP = os.getenv("ETH_RPC_HTTP", "https://eth.llamarpc.com")
 ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "")
+ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", "")
+ETH_WALLET_ADDRESS = os.getenv("ETH_WALLET_ADDRESS", "")
+ETH_WALLET_PRIVKEY = os.getenv("ETH_WALLET_PRIVKEY", "")
 ETH_POLL_INTERVAL = int(os.getenv("ETH_POLL_INTERVAL", "3"))  # 3s mínimo sin rate limit
+WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8000"))
 
 # --- Modo live/simulación ---
 # Poner LIVE_MODE=false en Railway para pausar trading real sin borrar las keys.

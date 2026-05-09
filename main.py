@@ -137,6 +137,37 @@ def _print_copytrade_summary():
     ))
 
 
+def _print_eth_stats():
+    """Muestra estadísticas del simulador Ethereum."""
+    try:
+        from copytrade import eth_simulator
+        stats = eth_simulator.get_eth_stats()
+        positions = eth_simulator.get_eth_positions()
+
+        table = Table(
+            box=box.SIMPLE_HEAD, show_header=False,
+            border_style="bright_black", expand=True, padding=(0, 1),
+        )
+        table.add_column("Métrica", style="dim white")
+        table.add_column("Valor", style="bold cyan")
+
+        table.add_row("Balance", f"${stats['balance']:.2f}")
+        table.add_row("Capital inicial", f"${stats['initial']:.2f}")
+        table.add_row("Retorno", f"{stats['return_pct']:.1f}%")
+        table.add_row("PnL total", f"${stats['total_pnl']:.2f}")
+        table.add_row("Posiciones abiertas", str(stats['open_positions']))
+        table.add_row("Trades totales", str(stats['total_trades']))
+
+        console.print(Panel(
+            table,
+            title="[bold white]📊  Simulador Ethereum",
+            border_style="cyan",
+            padding=(0, 1),
+        ))
+    except Exception:
+        pass
+
+
 def main():
     _print_header()
 
@@ -162,6 +193,10 @@ def main():
     # Mostrar patrones aprendidos si ya hay datos
     if load_rules():
         print_learner_insights()
+
+    # Mostrar estadísticas de Ethereum
+    _print_eth_stats()
+    console.print()
 
     # Recuperar posiciones abiertas de reinicios previos
     if WALLET_PUBKEY:
