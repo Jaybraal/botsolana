@@ -29,6 +29,10 @@ WALLET_LABELS: dict[str, str] = {
     "DuQabFqdC9eeBULVa7TTdZYxe8vK8ct5DZr4Xcf7docy": "Orange",
     "7SDs3PjT2mswKQ7Zo4FTucn9gJdtuW4jaacPA65BseHS": "Insentos",
     "831yhv67QpKqLBJjbmw2xoDUeeFHGUx8RnuRj9imeoEs": "Trey",
+    "DxM1hfY8FQ8dNGrucuJzhJcF8KRbjk8WBwrgKvQ9spPv": "RC",
+    "4BdKaxN8G6ka4GYtQQWk4G4dZRUTX2vQH9GcXdBREFUk": "Cupsey-2",
+    "0xdc6b9d500d26ac3dd43f783f4ada4d6c37205232": "ETH-Wallet-1",
+    "0xb3b088d37f03f82e8caaf019191dbaab6bf9d6cd": "ETH-Wallet-2",
 }
 
 # --- Config del bot (copy trade) ---
