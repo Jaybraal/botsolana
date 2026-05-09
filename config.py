@@ -2,9 +2,13 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-# --- RPC ---
+# --- RPC Solana ---
 RPC_HTTP = os.getenv("SOLANA_RPC_HTTP", "https://api.mainnet-beta.solana.com")
 RPC_WS   = os.getenv("SOLANA_RPC_WS",  "wss://api.mainnet-beta.solana.com")
+
+# --- RPC Ethereum ---
+ETH_RPC_HTTP = os.getenv("ETH_RPC_HTTP", "https://eth.llamarpc.com")
+ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "")
 
 # --- Modo live/simulación ---
 # Poner LIVE_MODE=false en Railway para pausar trading real sin borrar las keys.

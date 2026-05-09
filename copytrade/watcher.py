@@ -356,8 +356,21 @@ async def watch_pumpportal():
 
 
 async def watch_all():
-    """Corre Helius y PumpPortal WebSocket en paralelo."""
-    await asyncio.gather(
+    """Corre Helius, PumpPortal y ETH watcher en paralelo."""
+    from utils.blockchain import detect_blockchain
+    from copytrade.eth_watcher import watch_eth_wallets
+
+    # Separar wallets por blockchain
+    solana_wallets = [w for w in TARGET_WALLETS if detect_blockchain(w) == "solana"]
+    eth_wallets = [w for w in TARGET_WALLETS if detect_blockchain(w) == "ethereum"]
+
+    tasks = [
         watch(),
         watch_pumpportal(),
-    )
+    ]
+
+    if eth_wallets:
+        log.info(f"Iniciando ETH watcher para {len(eth_wallets)} wallets")
+        tasks.append(watch_eth_wallets(eth_wallets, poll_interval=30))
+
+    await asyncio.gather(*tasks)
