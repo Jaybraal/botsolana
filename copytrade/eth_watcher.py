@@ -74,11 +74,17 @@ def detect_uniswap_swap(tx: dict) -> dict | None:
     return None
 
 
-async def watch_eth_wallets(eth_wallets: list, poll_interval: int = 30):
-    """Monitorea wallets Ethereum en polling."""
+async def watch_eth_wallets(eth_wallets: list, poll_interval: int = None):
+    """Monitorea wallets Ethereum en polling.
+
+    poll_interval: segundos entre checks (default: 3s = máximo sin rate limit)
+    """
+    if poll_interval is None:
+        poll_interval = int(os.getenv("ETH_POLL_INTERVAL", "3"))
+
     tracked_txs = set()
 
-    log.info(f"ETH Watcher iniciado para {len(eth_wallets)} wallets")
+    log.info(f"ETH Watcher iniciado para {len(eth_wallets)} wallets | polling cada {poll_interval}s")
 
     while True:
         try:
