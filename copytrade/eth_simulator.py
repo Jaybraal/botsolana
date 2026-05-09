@@ -24,8 +24,8 @@ ETH_POSITIONS_FILE = "data/eth_positions.json"
 ETH_HISTORY_FILE   = "data/eth_history.json"
 ETH_BALANCE_FILE   = "data/eth_balance.json"
 
-# Config simulador ETH
-ETH_INITIAL_CAPITAL    = float(os.getenv("SIM_CAPITAL", "50.0"))
+# Config simulador ETH (capital separado de Solana)
+ETH_INITIAL_CAPITAL    = float(os.getenv("SIM_CAPITAL_ETH", "50.0"))
 ETH_MIN_TRADE          = float(os.getenv("SIM_MIN_TRADE", "0.50"))
 ETH_LIQUIDATION        = float(os.getenv("SIM_LIQUIDATION", "2.0"))
 ETH_GAS_PRICE_GWEI     = float(os.getenv("ETH_GAS_PRICE_GWEI", "30.0"))  # gwei (realista: 20-50)
