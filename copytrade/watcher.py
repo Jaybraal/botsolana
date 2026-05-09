@@ -359,7 +359,9 @@ async def watch_all():
     """Corre Helius, PumpPortal y ETH watcher en paralelo."""
     from utils.blockchain import detect_blockchain
     from copytrade.eth_watcher import watch_eth_wallets
+    from copytrade.alchemy_webhooks import start_webhook_server, set_monitored_wallets
     from config import ETH_POLL_INTERVAL
+    import os
 
     # Separar wallets por blockchain
     solana_wallets = [w for w in TARGET_WALLETS if detect_blockchain(w) == "solana"]
@@ -372,6 +374,16 @@ async def watch_all():
 
     if eth_wallets:
         log.info(f"Iniciando ETH watcher para {len(eth_wallets)} wallets")
-        tasks.append(watch_eth_wallets(eth_wallets, poll_interval=ETH_POLL_INTERVAL))
+
+        # Usar webhooks si ALCHEMY_API_KEY está configurado
+        if os.getenv("ALCHEMY_API_KEY"):
+            log.info("Modo: Alchemy Webhooks (< 100ms)")
+            set_monitored_wallets(eth_wallets)
+            # Iniciar servidor HTTP para recibir webhooks
+            webhook_port = int(os.getenv("WEBHOOK_PORT", "8000"))
+            tasks.append(start_webhook_server(port=webhook_port))
+        else:
+            log.info(f"Modo: Polling ({ETH_POLL_INTERVAL}s) — para webhook configura ALCHEMY_API_KEY")
+            tasks.append(watch_eth_wallets(eth_wallets, poll_interval=ETH_POLL_INTERVAL))
 
     await asyncio.gather(*tasks)

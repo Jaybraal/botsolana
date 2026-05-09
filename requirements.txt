@@ -6,3 +6,5 @@ python-dotenv
 base58
 certifi
 rich
+fastapi>=0.104.0
+uvicorn>=0.24.0
