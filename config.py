@@ -90,8 +90,9 @@ def get_max_trade_pct_by_balance(balance_usd: float) -> float:
         return 0.25    # $50–$200: 25%
 
 # Fallback para compatibilidad — se usa si no hay balance calculado
-# REDUCIDO A 2% para evitar exponential blowup (nuevo: weighted por wallet)
-MAX_TRADE_PCT  = float(os.getenv("MAX_TRADE_PCT",  "0.02"))  # 2% máximo por trade
+# AJUSTADO A 3.5% para viabilidad con weighted allocation
+# Con ponderación: efectivo = 0.5-2.8% según wallet (vs 3.5%)
+MAX_TRADE_PCT  = float(os.getenv("MAX_TRADE_PCT",  "0.035"))  # 3.5% máximo por trade
 
 # Mínimo en lamports por trade (evita trades de polvo que no cubren las fees).
 MIN_TRADE_SOL  = float(os.getenv("MIN_TRADE_SOL",  "0.005"))  # en SOL
