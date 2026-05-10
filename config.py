@@ -44,6 +44,19 @@ WALLET_LABELS: dict[str, str] = {
     "0xb3b088d37f03f82e8caaf019191dbaab6bf9d6cd": "ETH-Wallet-2",
 }
 
+# --- Weighted Wallet Allocation (NUEVO) ---
+# Asigna porcentaje de capital dinámicamente según performance histórica
+# Basado en win rate real de cada wallet
+WALLET_WEIGHTS: dict[str, float] = {
+    "4BdKaxN8G6ka4GYtQQWk4G4dZRUTX2vQH9GcXdBREFUk": 0.40,  # Cupsey-2: 61.5% WR → 40%
+    "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9": 0.30,  # Decu: 56.2% WR → 30%
+    "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o": 0.20,  # Cented: 44.4% WR → 20%
+    "2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f": 0.10,  # Cupsey: 25.0% WR → 10%
+}
+
+DYNAMIC_REWEIGHT = os.getenv("DYNAMIC_REWEIGHT", "true").lower() == "true"
+REWEIGHT_INTERVAL_HOURS = 24  # Recalcular weights cada 24h
+
 # --- Config del bot (copy trade) ---
 SLIPPAGE_BPS     = int(os.getenv("SLIPPAGE_BPS", "75"))   # 75 = 0.75% (optimizado)
 
@@ -77,7 +90,8 @@ def get_max_trade_pct_by_balance(balance_usd: float) -> float:
         return 0.25    # $50–$200: 25%
 
 # Fallback para compatibilidad — se usa si no hay balance calculado
-MAX_TRADE_PCT  = float(os.getenv("MAX_TRADE_PCT",  "0.05"))  # 5% máximo por trade
+# REDUCIDO A 2% para evitar exponential blowup (nuevo: weighted por wallet)
+MAX_TRADE_PCT  = float(os.getenv("MAX_TRADE_PCT",  "0.02"))  # 2% máximo por trade
 
 # Mínimo en lamports por trade (evita trades de polvo que no cubren las fees).
 MIN_TRADE_SOL  = float(os.getenv("MIN_TRADE_SOL",  "0.005"))  # en SOL

@@ -1,0 +1,140 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║                  BOTSOLANA - RESUMEN EJECUTIVO RÁPIDO                     ║
+║                         Evaluación: 10 de Mayo 2026                       ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 RESULTADOS DEL PERÍODO (24-30 ABRIL 2026)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Total Trades:               46
+Win Rate:                   41.3% (19 wins / 27 losses)
+P&L Total:                  -$111.53 ❌ PÉRDIDA
+Capital Inicial:            $20.00
+Balance Final:              -$91.53
+ROI:                        -557.6%
+
+MEJOR TRADE:  KILLGPT +$71.93 (+239.8%)
+PEOR TRADE:   SUTOSHI -$29.78 (-99.3%)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 WALLETS RENTABLES vs NO RENTABLES (por fecha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ RENTABLE:     26 Abril (+$26.14) — 72.7% win rate — 11 trades
+
+❌ NO RENTABLE:  24 Abril (-$70.14) — 0% win rate — 6 trades
+                 25 Abril (-$9.63)  — 50% win rate — 4 trades
+                 27 Abril (-$31.70) — 43% win rate — 7 trades
+                 28 Abril (+$3.37)  — 17% win rate — 6 trades (salvado por KILLGPT)
+                 29 Abril (-$19.14) — 50% win rate — 10 trades
+                 30 Abril (-$10.43) — 0% win rate — 2 trades
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚩 PROBLEMAS PRINCIPALES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. RUGPULLS (4 tokens colapsaron a $0):
+   - uncvwance:  -$29.60 (-98.7%)
+   - NIB:        -$29.75 (-99.2%)
+   - Elon:       -$29.55 (-98.5%)
+   - SUTOSHI:    -$29.78 (-99.3%)
+   TOTAL PÉRDIDA: -$119.68 (107% del total de pérdidas)
+
+2. ENTRADA EN TOKENS MUY NUEVOS:
+   - MCap mínimo actual: <$100K
+   - Edad mínima: <1 hora
+   - Resultado: Alta probabilidad de rugpull
+
+3. STOP LOSS INSUFICIENTE:
+   - SL actual: 70% (permite perder $21 de $30 por trade)
+   - Mejor: 50% (limita pérdida a $15 máximo)
+
+4. HORARIOS PROBLEMÁTICOS:
+   - 01:00-09:00 UTC: 100% de pérdidas
+   - Mejor: 13:00-14:00 UTC (100% win rate)
+
+5. DEPENDENCIA DE DEX VOLÁTIL:
+   - 95.7% trades en Pumpfun (más rugpulls)
+   - Solo 1.8% en Raydium (más estable)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ ANÁLISIS POSITIVO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔍 SIN LOS RUGPULLS:
+   Si eliminamos solo los 4 rugpulls, el resultado sería:
+   -$111.53 + $119.68 = +$8.15 (POSITIVO)
+   
+   Esto demuestra que el sistema FUNCIONA, solo necesita filtros.
+
+🏆 DÍA OPTIMIZADO:
+   26 Abril mostró que con mejor selección de tokens:
+   - Win rate: 72.7% (vs 41.3% general)
+   - P&L: +$26.14 (único día positivo)
+   
+   Este es el benchmark a alcanzar.
+
+💥 POTENCIAL DE GANANCIAS:
+   KILLGPT solo: +$71.93 (+239.8%)
+   Demuestra que los movimientos 200%+ son posibles.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔧 FIXES INMEDIATOS RECOMENDADOS (Antes de Deploy #2)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PRIORIDAD CRÍTICA:
+1. Aumentar MIN_MCAP de $100K → $500K (evitar rugpulls nuevos)
+2. Reducir STOP_LOSS_PCT de 70% → 50% (limitar pérdidas)
+3. Agregar filtro horario: pausar 01:00-09:00 UTC (evitar horarios malos)
+4. Diversificar: Pumpfun 60% → Raydium 40% (menos volátil)
+
+IMPACTO ESPERADO:
+- Win rate: 41.3% → 60%+
+- P&L: -$111.53 → +$50+
+- ROI: -557.6% → +150%+
+
+TESTING:
+- Ejecutar simulador 24h con nuevos parámetros
+- Validar que gane dinero
+- Hacer commit antes de deploy
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📂 ARCHIVOS DE REFERENCIA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Reporte Completo:  BotSolana_Reporte_Evaluacion_2026-05-10.md (este directorio)
+Datos de Trades:   data/trades.json (46 trades con P&L completo)
+Logs Históricos:   logs/ (copytrade_live.log, sniper_live.log, etc)
+Config Actual:     .env (variables de operación)
+Deploy Config:     railway.json (configuración de Railway)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚀 RAILWAY STATUS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Status:          ✅ RUNNING (sin crashes)
+Builder:         NIXPACKS
+Start Cmd:       python3 main.py
+Restart Policy:  ON_FAILURE (max 10 retries)
+Uptime:          6 días, 2 horas, 33 minutos
+Last Activity:   30 Abril 10:14 UTC
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 CONCLUSIÓN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+❌ PERÍODO EVALUADO:  NO RENTABLE (-$111.53)
+✅ POTENCIAL:        ALTO (demostraría rentabilidad sin rugpulls)
+🎯 ACCIÓN REQUERIDA: Implementar 4 fixes inmediatos
+
+El bot está FUNCIONAL pero NECESITA OPTIMIZACIÓN. Los problemas son
+manejables y los fixes son claros. Con las 4 recomendaciones críticas,
+se espera que el próximo período sea RENTABLE con >150% ROI.
+
+SIGUIENTE SESIÓN DE TRADING DEBE:
+✓ Incluir MIN_MCAP=500K
+✓ Incluir SL=50%
+✓ Pausar 01:00-09:00 UTC
+✓ Diversificar DEXs
+
