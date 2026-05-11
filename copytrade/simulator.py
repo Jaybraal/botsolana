@@ -45,6 +45,7 @@ os.makedirs("data", exist_ok=True)
 POSITIONS_FILE = "data/sim_positions.json"
 HISTORY_FILE   = "data/sim_history.json"
 BALANCE_FILE   = "data/sim_balance.json"
+DRIFT_LOG_FILE = "data/execution_drift.jsonl"
 
 # Si SIM_RESET=true, borra datos previos y empieza desde SIM_CAPITAL limpio.
 # Poner en false después del primer deploy para que no resetee en reinicios.
@@ -561,6 +562,30 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str,
     _history.append(trade)
     _save_positions()
     _save_history()
+
+    # Drift log en modo SIM — baseline para comparar contra live real
+    try:
+        entry_count = 0
+        with open(DRIFT_LOG_FILE, "a") as _df:
+            _df.write(json.dumps({
+                "timestamp":             time.time(),
+                "time_str":              datetime.now().strftime("%H:%M:%S %d/%m"),
+                "mode":                  "sim",
+                "symbol":                symbol,
+                "wallet_label":          label,
+                "program":               pos.get("entry_context", {}).get("program", ""),
+                "sol_spent_real_sol":    round(amount_usd / _get_sol_price_usd(), 6),
+                "sol_received_real_sol": round((amount_usd + pnl_usd) / _get_sol_price_usd(), 6),
+                "real_pnl_sol":          round(pnl_usd / _get_sol_price_usd(), 6),
+                "real_pnl_pct":          round(pnl_pct, 2),
+                "hold_min":              round(hold_min, 1),
+                "buy_latency_ms":        1500.0,
+            }) + "\n")
+        if os.path.exists(DRIFT_LOG_FILE):
+            entry_count = sum(1 for _ in open(DRIFT_LOG_FILE))
+        log.info(f"[DRIFT] SIM grabado #{entry_count} | {label} {symbol} | P&L: {round(pnl_pct,1)}% | hold: {round(hold_min,1)}min")
+    except Exception as _e:
+        log.warning(f"[DRIFT] Error grabando SIM: {_e}")
 
     # Actualizar reglas del learner
     try:
