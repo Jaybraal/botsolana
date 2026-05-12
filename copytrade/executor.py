@@ -33,6 +33,7 @@ client = Client(RPC_HTTP)
 os.makedirs("data", exist_ok=True)
 COPYTRADES_FILE  = "data/copytrades.json"
 DEAD_TOKENS_FILE = "data/dead_tokens.json"
+DRIFT_LOG_FILE   = "data/execution_drift.jsonl"
 
 SOL_MINT     = TOKENS["SOL"]
 LAMPORTS_PER_SOL = 1_000_000_000
@@ -201,6 +202,35 @@ def _get_dynamic_trade_pct(current_balance: int) -> float:
     return trade_pct
 
 
+# ── Drift log ────────────────────────────────────────────────────────────────
+
+def _append_drift_log(entry: dict):
+    """Persiste cada trade cerrado con métricas de ejecución real vs simulada."""
+    with open(DRIFT_LOG_FILE, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def _log_drift_summary(entry: dict):
+    """Imprime resumen de drift al cerrar un trade."""
+    sym        = entry["symbol"]
+    wallet     = entry["wallet_label"]
+    spent      = entry["sol_spent_real_sol"]
+    received   = entry["sol_received_real_sol"]
+    pnl_sol    = entry["real_pnl_sol"]
+    pnl_pct    = entry["real_pnl_pct"]
+    hold_min   = entry["hold_min"]
+    latency_ms = entry.get("buy_latency_ms", 0)
+
+    color = "bold green" if pnl_sol >= 0 else "bold red"
+    sign  = "+" if pnl_sol >= 0 else ""
+    log.info(
+        f"[DRIFT] [{color}]{wallet} {sym}[/] | "
+        f"gastado: {spent:.5f} SOL → recibido: {received:.5f} SOL | "
+        f"P&L real: [{color}]{sign}{pnl_sol:.5f} SOL ({sign}{pnl_pct:.1f}%)[/] | "
+        f"hold: {hold_min:.1f}min | latencia buy: {latency_ms:.0f}ms"
+    )
+
+
 # ── Persistencia ─────────────────────────────────────────────────────────────
 
 def _append_copytrade(entry: dict):
@@ -350,12 +380,27 @@ def execute_copy(swap: dict) -> bool:
             log.debug(f"[{label}] {swap['symbol_out']} vendido hace {time.time() - last_sell_time:.0f}s — cooldown activo")
             return False
 
-        # PROTECCIÓN 3: Verificar liquidez mínima en DexScreener ($500 USD)
+        # FILTRO AMM: Ignorar Pump.fun BC — con 2s de latencia, siempre entramos después del pump
+        # Solo copiar en PumpSwap AMM, Raydium u Orca donde el precio es más estable
+        _swap_program = swap.get("program", "")
+        _only_amm = os.getenv("ONLY_AMM_SWAPS", "true").lower() == "true"
+        if _only_amm and _swap_program == "Pump.fun":
+            log.info(
+                f"[{label}] Ignorando {swap['symbol_out']} en Pump.fun BC — "
+                f"solo copiamos AMM (PumpSwap/Raydium/Orca)"
+            )
+            return False
+
+        # PROTECCIÓN 3: Verificar liquidez mínima en DexScreener
+        _min_liquidity = float(os.getenv("MIN_LIQUIDITY_USD", "5000"))
         from utils.dexscreener import get_best_pair
         _pair_info = get_best_pair(token_out)
         _liquidity_usd = float((_pair_info or {}).get("liquidity", {}).get("usd", 0))
-        if _pair_info and _liquidity_usd < 500:
-            log.warning(f"[{label}] Liquidez ${_liquidity_usd:.0f} < $500 — abortando para evitar slippage extremo")
+        if _pair_info and _liquidity_usd < _min_liquidity:
+            log.warning(
+                f"[{label}] Liquidez ${_liquidity_usd:.0f} < ${_min_liquidity:.0f} — "
+                f"abortando para evitar slippage extremo"
+            )
             return False
 
         our_balance = get_our_sol_balance()
@@ -426,19 +471,21 @@ def execute_copy(swap: dict) -> bool:
 
         is_pumpfun_bc  = swap.get("program") == "Pump.fun"
         is_pumpswap    = swap.get("program") == "PumpSwap"
+
+        # DRIFT: balance justo antes de ejecutar y timestamp de inicio
+        _bal_before_buy = get_our_sol_balance()
+        _buy_started_at = time.time()
+
         sig = None
         if is_pumpfun_bc:
-            # Bonding curve: PumpPortal directo
             log.info(f"[{label}] Bonding curve — usando PumpPortal (pump) para {swap['symbol_out']}")
             sig = _send_pumpfun_buy(token_out, amount_lamports, keypair)
         elif is_pumpswap:
-            # PumpSwap AMM: Jupiter primero, luego PumpPortal pumpswap como fallback
             sig = _send_swap(swap["token_in"], token_out, amount_lamports, keypair)
             if not sig:
                 log.info(f"[{label}] Jupiter falló — intentando PumpPortal (pumpswap) para {swap['symbol_out']}")
                 sig = _send_pumpfun_buy_pumpswap(token_out, amount_lamports, keypair)
         else:
-            # Jupiter/Raydium/Orca
             sig = _send_swap(swap["token_in"], token_out, amount_lamports, keypair)
 
         if not sig:
@@ -446,22 +493,37 @@ def execute_copy(swap: dict) -> bool:
             _failed_buy_attempts[token_out] = _failed_buy_attempts.get(token_out, 0) + 1
             return False
 
-        _open_copies[token_out] = {"symbol": swap["symbol_out"], "opened": time.time(), "program": swap.get("program", "")}
+        # DRIFT: balance justo después — diferencia = SOL real gastado (incluye fees de red)
+        _bal_after_buy   = get_our_sol_balance()
+        _sol_spent_real  = (_bal_before_buy - _bal_after_buy) / LAMPORTS_PER_SOL
+        _buy_latency_ms  = (time.time() - _buy_started_at) * 1000
+
+        _open_copies[token_out] = {
+            "symbol":          swap["symbol_out"],
+            "opened":          time.time(),
+            "program":         swap.get("program", ""),
+            # métricas drift
+            "sol_spent_real":  _sol_spent_real,
+            "buy_latency_ms":  _buy_latency_ms,
+            "wallet_label":    label,
+        }
         _append_copytrade({
-            "timestamp":    time.time(),
-            "time_str":     datetime.now().strftime("%H:%M:%S %d/%m"),
-            "type":         "buy",
-            "wallet":       swap["wallet"],
-            "wallet_label": label,
-            "program":      swap["program"],
-            "symbol_in":    swap["symbol_in"],
-            "symbol_out":   swap["symbol_out"],
-            "token_in":     swap["token_in"],
-            "token_out":    token_out,
-            "amount_sol":   amount_lamports / LAMPORTS_PER_SOL,
+            "timestamp":      time.time(),
+            "time_str":       datetime.now().strftime("%H:%M:%S %d/%m"),
+            "type":           "buy",
+            "wallet":         swap["wallet"],
+            "wallet_label":   label,
+            "program":        swap["program"],
+            "symbol_in":      swap["symbol_in"],
+            "symbol_out":     swap["symbol_out"],
+            "token_in":       swap["token_in"],
+            "token_out":      token_out,
+            "amount_sol":     amount_lamports / LAMPORTS_PER_SOL,
+            "sol_spent_real": _sol_spent_real,
+            "buy_latency_ms": round(_buy_latency_ms, 1),
             "proportion_pct": round(proportion_pct, 2),
-            "tx_sig":       sig,
-            "simulated":    False,
+            "tx_sig":         sig,
+            "simulated":      False,
         })
         log.info(f"[bold green]COPY BUY OK[/] — {swap['symbol_out']} | TX: {sig}")
         # Alimentar el simulador en vivo para acumular datos de aprendizaje
@@ -525,24 +587,55 @@ def execute_copy(swap: dict) -> bool:
             log.warning(f"[{label}] Sell falló (pump + pumpswap + Jupiter) — {swap['symbol_in']} — posición queda abierta")
             return False
 
+        # DRIFT: balance antes de la venta
+        _bal_before_sell = get_our_sol_balance()
+
         pos = _open_copies.pop(token_in, {})
-        _failed_buy_attempts.pop(token_in, None)  # Limpiar contador de intentos fallidos
-        _recent_sells[token_in] = time.time()  # Registrar venta para cooldown de 2 min
+        _failed_buy_attempts.pop(token_in, None)
+        _recent_sells[token_in] = time.time()
         hold_min = (time.time() - pos.get("opened", time.time())) / 60
+
+        # DRIFT: balance después — diferencia = SOL real recibido (neto de fees)
+        _bal_after_sell      = get_our_sol_balance()
+        _sol_received_real   = (_bal_after_sell - _bal_before_sell) / LAMPORTS_PER_SOL
+        _sol_spent_real      = pos.get("sol_spent_real", 0.0)
+        _real_pnl_sol        = _sol_received_real - _sol_spent_real
+        _real_pnl_pct        = (_real_pnl_sol / _sol_spent_real * 100) if _sol_spent_real > 0 else 0.0
+
+        drift_entry = {
+            "timestamp":           time.time(),
+            "time_str":            datetime.now().strftime("%H:%M:%S %d/%m"),
+            "symbol":              swap["symbol_in"],
+            "wallet_label":        pos.get("wallet_label", label),
+            "program":             pos.get("program", swap.get("program", "")),
+            "sol_spent_real_sol":  round(_sol_spent_real, 6),
+            "sol_received_real_sol": round(_sol_received_real, 6),
+            "real_pnl_sol":        round(_real_pnl_sol, 6),
+            "real_pnl_pct":        round(_real_pnl_pct, 2),
+            "hold_min":            round(hold_min, 1),
+            "buy_latency_ms":      round(pos.get("buy_latency_ms", 0), 1),
+            "tx_sig_sell":         sig,
+        }
+        _append_drift_log(drift_entry)
+        _log_drift_summary(drift_entry)
+
         _append_copytrade({
-            "timestamp":    time.time(),
-            "time_str":     datetime.now().strftime("%H:%M:%S %d/%m"),
-            "type":         "sell",
-            "wallet":       swap["wallet"],
-            "wallet_label": label,
-            "program":      swap["program"],
-            "symbol_in":    swap["symbol_in"],
-            "symbol_out":   swap["symbol_out"],
-            "token_in":     token_in,
-            "token_out":    SOL_MINT,
-            "hold_min":     round(hold_min, 1),
-            "tx_sig":       sig,
-            "simulated":    False,
+            "timestamp":             time.time(),
+            "time_str":              datetime.now().strftime("%H:%M:%S %d/%m"),
+            "type":                  "sell",
+            "wallet":                swap["wallet"],
+            "wallet_label":          label,
+            "program":               swap["program"],
+            "symbol_in":             swap["symbol_in"],
+            "symbol_out":            swap["symbol_out"],
+            "token_in":              token_in,
+            "token_out":             SOL_MINT,
+            "hold_min":              round(hold_min, 1),
+            "sol_received_real":     round(_sol_received_real, 6),
+            "real_pnl_sol":          round(_real_pnl_sol, 6),
+            "real_pnl_pct":          round(_real_pnl_pct, 2),
+            "tx_sig":                sig,
+            "simulated":             False,
         })
         log.info(f"[bold green]COPY SELL OK[/] — {swap['symbol_in']} | Hold: {hold_min:.1f} min | TX: {sig}")
         # Alimentar el simulador en vivo para acumular datos de aprendizaje

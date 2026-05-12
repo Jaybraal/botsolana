@@ -66,13 +66,13 @@ SLIPPAGE_BPS     = int(os.getenv("SLIPPAGE_BPS", "75"))   # 75 = 0.75% (optimiza
 PROPORTIONAL_MODE = os.getenv("PROPORTIONAL_MODE", "true").lower() == "true"
 
 # Tope máximo: basado en balance actual (risk management).
-# Tabla dinámica según rango del balance en SOL:
-# - $50–$200 (2.5k–10k SOL a $20): 25% por trade
-# - $200–$1k (10k–50k SOL): 12% por trade
-# - $1k–$5k (50k–250k SOL): 7% por trade
-# - $5k+ (250k+ SOL): 3% por trade
+# Tabla dinámica según rango del balance en USD:
+# - $50–$200: 10% por trade (reducido tras pérdidas live con 25%)
+# - $200–$1k: 12% por trade
+# - $1k–$5k: 7% por trade
+# - $5k+:    3% por trade
 RISK_TIERS: list[tuple[float, float]] = [
-    (50, 0.25),      # $50-$200: 25%
+    (50, 0.10),      # $50-$200: 10%
     (200, 0.12),     # $200-$1k: 12%
     (1000, 0.07),    # $1k-$5k: 7%
     (float('inf'), 0.03),  # $5k+: 3%
