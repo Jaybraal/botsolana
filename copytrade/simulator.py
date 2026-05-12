@@ -453,7 +453,7 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
                     _positions.pop(token_mint, None)
                 return
         except Exception as _e:
-            log.debug(f"[scorer] Error en SIM: {_e} — dejando pasar")
+            log.warning(f"[SIM] ⚠ SCORER ERROR: {_e}")
 
     # ⚠️ TEST #1: Límite de liquidez dinámico
     liquidity_usd = entry_context.get("liquidity_usd", 0) if entry_context else 0
