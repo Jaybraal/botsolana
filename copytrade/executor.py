@@ -400,10 +400,13 @@ def execute_copy(swap: dict) -> bool:
         _use_scorer = os.getenv("USE_GROQ_SCORER", "true").lower() == "true"
         if _use_scorer:
             from copytrade.scorer import should_copy
+            _pair_created_ms = (_pair_info or {}).get("pairCreatedAt") or 0
+            _pair_created_s  = _pair_created_ms // 1000 if _pair_created_ms > 1e10 else _pair_created_ms
+            _token_age_min   = round((time.time() - _pair_created_s) / 60, 1) if _pair_created_s else None
             _token_info = {
                 "program":         _swap_program,
                 "liquidity_usd":   _liquidity_usd,
-                "token_age_min":   (_pair_info or {}).get("token_age_min"),
+                "token_age_min":   _token_age_min,
                 "mcap_usd":        float((_pair_info or {}).get("marketCap") or (_pair_info or {}).get("fdv") or 0),
                 "price_change_5m": float(((_pair_info or {}).get("priceChange") or {}).get("m5") or 0),
                 "price_change_1h": float(((_pair_info or {}).get("priceChange") or {}).get("h1") or 0),
