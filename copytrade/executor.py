@@ -380,16 +380,7 @@ def execute_copy(swap: dict) -> bool:
             log.debug(f"[{label}] {swap['symbol_out']} vendido hace {time.time() - last_sell_time:.0f}s — cooldown activo")
             return False
 
-        # FILTRO AMM: Ignorar Pump.fun BC — con 2s de latencia, siempre entramos después del pump
-        # Solo copiar en PumpSwap AMM, Raydium u Orca donde el precio es más estable
         _swap_program = swap.get("program", "")
-        _only_amm = os.getenv("ONLY_AMM_SWAPS", "true").lower() == "true"
-        if _only_amm and _swap_program == "Pump.fun":
-            log.info(
-                f"[{label}] Ignorando {swap['symbol_out']} en Pump.fun BC — "
-                f"solo copiamos AMM (PumpSwap/Raydium/Orca)"
-            )
-            return False
 
         # PROTECCIÓN 3: Verificar liquidez mínima en DexScreener
         _min_liquidity = float(os.getenv("MIN_LIQUIDITY_USD", "5000"))
@@ -404,21 +395,30 @@ def execute_copy(swap: dict) -> bool:
             return False
 
         # SCORER: Evaluar token contra patrones Groq aprendidos de historial
-        if os.getenv("USE_GROQ_SCORER", "true").lower() == "true":
+        # Si el scorer está activo, él decide — incluido si aceptar Pump.fun o no
+        # según lo que aprendió por wallet. Si scorer OFF, aplica el filtro AMM clásico.
+        _use_scorer = os.getenv("USE_GROQ_SCORER", "true").lower() == "true"
+        if _use_scorer:
             from copytrade.scorer import should_copy
             _token_info = {
-                "program":        _swap_program,
-                "liquidity_usd":  _liquidity_usd,
-                "token_age_min":  (_pair_info or {}).get("token_age_min"),
-                "mcap_usd":       float((_pair_info or {}).get("marketCap") or (_pair_info or {}).get("fdv") or 0),
+                "program":         _swap_program,
+                "liquidity_usd":   _liquidity_usd,
+                "token_age_min":   (_pair_info or {}).get("token_age_min"),
+                "mcap_usd":        float((_pair_info or {}).get("marketCap") or (_pair_info or {}).get("fdv") or 0),
                 "price_change_5m": float(((_pair_info or {}).get("priceChange") or {}).get("m5") or 0),
                 "price_change_1h": float(((_pair_info or {}).get("priceChange") or {}).get("h1") or 0),
-                "buys_5m":        int((((_pair_info or {}).get("txns") or {}).get("m5") or {}).get("buys") or 0),
-                "sells_5m":       int((((_pair_info or {}).get("txns") or {}).get("m5") or {}).get("sells") or 0),
+                "buys_5m":         int((((_pair_info or {}).get("txns") or {}).get("m5") or {}).get("buys") or 0),
+                "sells_5m":        int((((_pair_info or {}).get("txns") or {}).get("m5") or {}).get("sells") or 0),
             }
             _score_pass, _score_reason = should_copy(label, _token_info)
             if not _score_pass:
                 log.info(f"[{label}] ❌ Scorer rechazó {swap['symbol_out']} — {_score_reason}")
+                return False
+        else:
+            # Fallback: filtro AMM clásico cuando scorer está desactivado
+            _only_amm = os.getenv("ONLY_AMM_SWAPS", "true").lower() == "true"
+            if _only_amm and _swap_program == "Pump.fun":
+                log.info(f"[{label}] Ignorando {swap['symbol_out']} en Pump.fun BC (AMM filter)")
                 return False
 
         our_balance = get_our_sol_balance()
