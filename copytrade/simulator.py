@@ -22,6 +22,9 @@ from utils.dexscreener import get_best_pair
 from utils.market_context import get_context
 from utils.logger import get_logger
 
+# Scorer: misma lógica que en live mode
+_USE_SCORER = os.getenv("USE_GROQ_SCORER", "true").lower() == "true"
+
 # Caché del precio de SOL en USD — se refresca cada 60s
 _sol_price_usd:       float = 0.0
 _sol_price_fetched_at: float = 0.0
@@ -148,6 +151,10 @@ _positions:   dict[str, dict] = _load_positions()  # {token_mint: position}
 _history:     list[dict]                 = _load_history()
 _sim_balance: float                      = _load_balance()
 _lock = threading.Lock()  # protege _positions contra race conditions
+
+# Contadores del scorer — cuántos trades filtra vs deja pasar
+_scorer_accepted = 0
+_scorer_rejected = 0
 
 
 # ── Capital dinámico ──────────────────────────────────────────────────────────
@@ -285,8 +292,10 @@ def process(swap: dict):
             if token_amount > 0:
                 sell_implied = (sol_received / token_amount) * _get_sol_price_usd()
 
+    program = swap.get("program", "")
+
     if is_buy:
-        _handle_buy(wallet, wallet_label, token_out, symbol_out, wallet_buy_time, implied_price)
+        _handle_buy(wallet, wallet_label, token_out, symbol_out, wallet_buy_time, implied_price, program)
     elif is_sell:
         _handle_sell(wallet, wallet_label, token_in, symbol_in, sell_implied)
 
@@ -313,9 +322,10 @@ def _auto_close_stale():
 
 
 def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
-                wallet_buy_time: float | None = None, implied_price: float = 0.0):
+                wallet_buy_time: float | None = None, implied_price: float = 0.0,
+                program: str = ""):
     """Abre posición simulada al precio actual usando % del balance."""
-    global _sim_balance
+    global _sim_balance, _scorer_accepted, _scorer_rejected
 
     # Cerrar posiciones que llevan demasiado tiempo abiertas sin señal de venta
     _auto_close_stale()
@@ -410,6 +420,39 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
 
     entry_context = get_context(token_mint)
     tier_pct      = _get_trade_pct()
+
+    # ── Scorer (misma lógica que en live mode) ────────────────────────────────
+    if _USE_SCORER:
+        try:
+            from copytrade.scorer import should_copy
+            age_min = None
+            if entry_context and entry_context.get("age_days") is not None:
+                age_min = round(entry_context["age_days"] * 1440, 1)
+            token_info = {
+                "token_age_min":  age_min,
+                "liquidity_usd":  entry_context.get("liquidity_usd") if entry_context else None,
+                "mcap_usd":       entry_context.get("mcap_usd")      if entry_context else None,
+                "price_change_5m": entry_context.get("change_5m_pct") if entry_context else None,
+                "price_change_1h": entry_context.get("change_1h_pct") if entry_context else None,
+                "buys_5m":        None,
+                "program":        program,
+            }
+            passed, reason = should_copy(label, token_info)
+            if passed:
+                _scorer_accepted += 1
+            else:
+                _scorer_rejected += 1
+                total_seen = _scorer_accepted + _scorer_rejected
+                log.info(
+                    f"[SIM] 🚫 SCORER SKIP | [cyan]{label}[/] → [yellow]{symbol}[/] | "
+                    f"{reason} | rechazados: [red]{_scorer_rejected}[/]/{total_seen} "
+                    f"({_scorer_rejected/total_seen*100:.0f}% filtrado)"
+                )
+                with _lock:
+                    _positions.pop(token_mint, None)
+                return
+        except Exception as _e:
+            log.debug(f"[scorer] Error en SIM: {_e} — dejando pasar")
 
     # ⚠️ TEST #1: Límite de liquidez dinámico
     liquidity_usd = entry_context.get("liquidity_usd", 0) if entry_context else 0
@@ -632,6 +675,19 @@ def _print_summary():
         f"${_sim_balance:.2f}[/] | "
         f"ROI: [{'green' if roi_pct >= 0 else 'red'}]{roi_pct:+.1f}%[/]"
     )
+
+    # Estadísticas del scorer cada 50 trades
+    if _USE_SCORER and len(_history) % 50 == 0:
+        total_seen = _scorer_accepted + _scorer_rejected
+        if total_seen > 0:
+            filter_pct = _scorer_rejected / total_seen * 100
+            log.info(
+                f"[SIM] 🤖 SCORER STATS | "
+                f"Vistos: [white]{total_seen}[/] | "
+                f"Aceptados: [green]{_scorer_accepted}[/] | "
+                f"Rechazados: [red]{_scorer_rejected}[/] | "
+                f"Filtro: [yellow]{filter_pct:.0f}%[/] de señales bloqueadas"
+            )
 
     # Métricas avanzadas cada 50 trades
     if SIM_EXTENDED_METRICS and len(_history) % 50 == 0:
