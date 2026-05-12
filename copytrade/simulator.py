@@ -260,6 +260,11 @@ def process(swap: dict):
     """
     global _sim_balance
 
+    # Un solo log de diagnóstico, solo la primera vez
+    if not getattr(process, "_diag_done", False):
+        log.warning(f"[SIM-DIAG] _USE_SCORER={_USE_SCORER} | env={os.getenv('USE_GROQ_SCORER','NO_SET')}")
+        process._diag_done = True
+
     wallet       = swap.get("wallet", "")
     wallet_label = swap.get("wallet_label", wallet[:8] + "...")
     token_in     = swap.get("token_in",  "")
