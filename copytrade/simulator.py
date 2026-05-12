@@ -43,6 +43,7 @@ def _get_sol_price_usd() -> float:
     return _sol_price_usd if _sol_price_usd > 0 else 150.0
 
 log = get_logger("simulator")
+log.warning(f"[SIM] SCORER ACTIVO={_USE_SCORER} (USE_GROQ_SCORER={os.getenv('USE_GROQ_SCORER','NO_SET')})")
 
 os.makedirs("data", exist_ok=True)
 POSITIONS_FILE = "data/sim_positions.json"
@@ -424,6 +425,7 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
     # ── Scorer (misma lógica que en live mode) ────────────────────────────────
     if _USE_SCORER:
         try:
+            log.warning(f"[SIM] SCORER LLAMADO para {symbol} ({label})")
             from copytrade.scorer import should_copy
             age_min = None
             if entry_context and entry_context.get("age_days") is not None:
