@@ -23,7 +23,8 @@ from utils.market_context import get_context
 from utils.logger import get_logger
 
 # Scorer: misma lógica que en live mode
-_USE_SCORER = os.getenv("USE_GROQ_SCORER", "true").lower() == "true"
+_USE_SCORER = os.getenv("USE_GROQ_SCORER", "true").strip().lower() == "true"
+print(f"[SIMULATOR INIT] USE_GROQ_SCORER={os.getenv('USE_GROQ_SCORER')} → _USE_SCORER={_USE_SCORER}", flush=True)
 
 # Caché del precio de SOL en USD — se refresca cada 60s
 _sol_price_usd:       float = 0.0
@@ -425,7 +426,7 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
     # ── Scorer (misma lógica que en live mode) ────────────────────────────────
     if _USE_SCORER:
         try:
-            log.warning(f"[SIM] SCORER LLAMADO para {symbol} ({label})")
+            print(f"[SCORER DEBUG] llamado para {symbol} ({label})", flush=True)
             from copytrade.scorer import should_copy
             age_min = None
             if entry_context and entry_context.get("age_days") is not None:
