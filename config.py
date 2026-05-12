@@ -87,7 +87,7 @@ def get_max_trade_pct_by_balance(balance_usd: float) -> float:
     elif balance_usd >= 200:
         return 0.12    # $200–$1k: 12%
     else:
-        return 0.25    # $50–$200: 25%
+        return 0.10    # $50–$200: 10% (reducido para limitar pérdida por trade)
 
 # Fallback para compatibilidad — se usa si no hay balance calculado
 # AJUSTADO A 3.5% para viabilidad con weighted allocation
