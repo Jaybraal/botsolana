@@ -90,12 +90,13 @@ def score_token(wallet_label: str, token_info: dict) -> tuple[int, bool, str]:
     if not _patterns:
         return (50, True, "scorer desactivado — sin patrones")
 
-    # Buscar patrón de la wallet (exact match o case-insensitive)
+    # Buscar patrón de la wallet — exact, case-insensitive, y limpiando emojis/espacios
     wallet_pattern = _patterns.get(wallet_label)
     if not wallet_pattern:
-        # Buscar case-insensitive
+        # Normalizar: quitar emojis y espacios extra para match (ej: "Cupsey ⭐" → "Cupsey")
+        label_clean = wallet_label.encode("ascii", "ignore").decode().strip()
         for k, v in _patterns.items():
-            if k.lower() == wallet_label.lower():
+            if k.lower() == wallet_label.lower() or k.lower() == label_clean.lower():
                 wallet_pattern = v
                 break
 

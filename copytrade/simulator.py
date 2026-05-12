@@ -24,7 +24,6 @@ from utils.logger import get_logger
 
 # Scorer: misma lógica que en live mode
 _USE_SCORER = os.getenv("USE_GROQ_SCORER", "true").strip().lower() == "true"
-print(f"[SIMULATOR INIT] USE_GROQ_SCORER={os.getenv('USE_GROQ_SCORER')} → _USE_SCORER={_USE_SCORER}", flush=True)
 
 # Caché del precio de SOL en USD — se refresca cada 60s
 _sol_price_usd:       float = 0.0
@@ -44,7 +43,6 @@ def _get_sol_price_usd() -> float:
     return _sol_price_usd if _sol_price_usd > 0 else 150.0
 
 log = get_logger("simulator")
-log.warning(f"[SIM] SCORER ACTIVO={_USE_SCORER} (USE_GROQ_SCORER={os.getenv('USE_GROQ_SCORER','NO_SET')})")
 
 os.makedirs("data", exist_ok=True)
 POSITIONS_FILE = "data/sim_positions.json"
@@ -260,11 +258,6 @@ def process(swap: dict):
     """
     global _sim_balance
 
-    # Un solo log de diagnóstico, solo la primera vez
-    if not getattr(process, "_diag_done", False):
-        log.warning(f"[SIM-DIAG] _USE_SCORER={_USE_SCORER} | env={os.getenv('USE_GROQ_SCORER','NO_SET')}")
-        process._diag_done = True
-
     wallet       = swap.get("wallet", "")
     wallet_label = swap.get("wallet_label", wallet[:8] + "...")
     token_in     = swap.get("token_in",  "")
@@ -431,7 +424,6 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
     # ── Scorer (misma lógica que en live mode) ────────────────────────────────
     if _USE_SCORER:
         try:
-            print(f"[SCORER DEBUG] llamado para {symbol} ({label})", flush=True)
             from copytrade.scorer import should_copy
             age_min = None
             if entry_context and entry_context.get("age_days") is not None:
