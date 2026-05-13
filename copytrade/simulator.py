@@ -24,6 +24,9 @@ from utils.logger import get_logger
 
 # Scorer: misma lógica que en live mode
 _USE_SCORER = os.getenv("USE_GROQ_SCORER", "true").strip().lower() == "true"
+# En SIM, el scorer solo observa y loguea — nunca bloquea trades.
+# Así SIM aprende de TODOS los trades reales de las wallets copiadas.
+_SCORER_ENFORCE_IN_SIM = os.getenv("SCORER_ENFORCE_IN_SIM", "false").strip().lower() == "true"
 
 # Caché del precio de SOL en USD — se refresca cada 60s
 _sol_price_usd:       float = 0.0
@@ -438,20 +441,26 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
                 "program":        program,
             }
             passed, reason = should_copy(label, token_info)
-            log.info(f"[SIM] 🤖 SCORER | [cyan]{label}[/] → [yellow]{symbol}[/] | {reason}")
             if passed:
                 _scorer_accepted += 1
+                log.info(f"[SIM] 🤖 SCORER ✅ | [cyan]{label}[/] → [yellow]{symbol}[/] | {reason}")
             else:
                 _scorer_rejected += 1
                 total_seen = _scorer_accepted + _scorer_rejected
-                log.info(
-                    f"[SIM] 🚫 SCORER SKIP | [cyan]{label}[/] → [yellow]{symbol}[/] | "
-                    f"{reason} | rechazados: [red]{_scorer_rejected}[/]/{total_seen} "
-                    f"({_scorer_rejected/total_seen*100:.0f}% filtrado)"
-                )
-                with _lock:
-                    _positions.pop(token_mint, None)
-                return
+                if _SCORER_ENFORCE_IN_SIM:
+                    log.info(
+                        f"[SIM] 🚫 SCORER SKIP | [cyan]{label}[/] → [yellow]{symbol}[/] | "
+                        f"{reason} | rechazados: [red]{_scorer_rejected}[/]/{total_seen} "
+                        f"({_scorer_rejected/total_seen*100:.0f}% filtrado)"
+                    )
+                    with _lock:
+                        _positions.pop(token_mint, None)
+                    return
+                else:
+                    log.info(
+                        f"[SIM] 🤖 SCORER 👁 OBSERVE | [cyan]{label}[/] → [yellow]{symbol}[/] | "
+                        f"{reason} | hubiera rechazado ({_scorer_rejected}/{total_seen})"
+                    )
         except Exception as _e:
             log.warning(f"[SIM] ⚠ SCORER ERROR: {_e}")
 
