@@ -171,14 +171,29 @@ def _print_eth_stats():
 def main():
     _print_header()
 
-    if not TARGET_WALLETS:
+    autonomous_mode = os.getenv("AUTONOMOUS_MODE", "false").lower() == "true"
+
+    if not TARGET_WALLETS and not autonomous_mode:
         console.print(Panel(
-            "[bold red]✗  TARGET_WALLETS no configurado en .env[/]\n"
-            "[dim]Ejemplo: TARGET_WALLETS=ABC123...,DEF456...[/]",
+            "[bold red]✗  Sin modo activo[/]\n"
+            "[dim]Configura TARGET_WALLETS para copy-trade[/]\n"
+            "[dim]O pon AUTONOMOUS_MODE=true para trading autónomo[/]",
             border_style="red",
             padding=(1, 2),
         ))
         sys.exit(1)
+
+    if autonomous_mode:
+        console.print(Panel(
+            "[bold cyan]🤖 MODO AUTÓNOMO ACTIVO[/]\n"
+            "[dim]El bot detecta tokens nuevos en Pump.fun y decide solo usando patrones de 4,913 trades históricos.[/]\n"
+            f"[dim]SL {os.getenv('AUTO_STOP_LOSS_PCT','-15')}% | "
+            f"TP +{os.getenv('AUTO_TAKE_PROFIT_PCT','40')}% | "
+            f"Eval en {os.getenv('AUTO_EVAL_DELAY_MIN','7')}min | "
+            f"Max {os.getenv('AUTO_MAX_POSITIONS','3')} posiciones[/]",
+            border_style="cyan",
+            padding=(0, 2),
+        ))
 
     if not WALLET_PUBKEY:
         console.print(Panel(
@@ -188,7 +203,8 @@ def main():
             padding=(0, 2),
         ))
 
-    _print_wallets_panel()
+    if TARGET_WALLETS:
+        _print_wallets_panel()
 
     # Mostrar patrones aprendidos si ya hay datos
     if load_rules():

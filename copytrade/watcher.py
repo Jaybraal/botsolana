@@ -356,7 +356,7 @@ async def watch_pumpportal():
 
 
 async def watch_all():
-    """Corre Helius, PumpPortal y ETH watcher en paralelo."""
+    """Corre Helius, PumpPortal, scanner autónomo y ETH watcher en paralelo."""
     from utils.blockchain import detect_blockchain
     from copytrade.eth_watcher import watch_eth_wallets
     from copytrade.alchemy_webhooks import start_webhook_server, set_monitored_wallets
@@ -367,19 +367,29 @@ async def watch_all():
     solana_wallets = [w for w in TARGET_WALLETS if detect_blockchain(w) == "solana"]
     eth_wallets = [w for w in TARGET_WALLETS if detect_blockchain(w) == "ethereum"]
 
-    tasks = [
-        watch(),
-        watch_pumpportal(),
-    ]
+    tasks = []
+
+    # Copy-trade watchers (solo si hay wallets configuradas)
+    if solana_wallets:
+        tasks += [watch(), watch_pumpportal()]
+    else:
+        log.info("[watcher] Sin TARGET_WALLETS — modo copy-trade desactivado")
+
+    # Scanner autónomo (activo si AUTONOMOUS_MODE=true)
+    if os.getenv("AUTONOMOUS_MODE", "false").lower() == "true":
+        from copytrade.autonomous_scanner import watch_autonomous
+        log.info("[watcher] 🤖 Modo autónomo activado — scanner sin copy wallets")
+        tasks.append(watch_autonomous())
+
+    if not tasks:
+        log.error("Sin modo activo. Configura TARGET_WALLETS o pon AUTONOMOUS_MODE=true.")
+        return
 
     if eth_wallets:
         log.info(f"Iniciando ETH watcher para {len(eth_wallets)} wallets")
-
-        # Usar webhooks si ALCHEMY_API_KEY está configurado
         if os.getenv("ALCHEMY_API_KEY"):
             log.info("Modo: Alchemy Webhooks (< 100ms)")
             set_monitored_wallets(eth_wallets)
-            # Iniciar servidor HTTP para recibir webhooks
             webhook_port = int(os.getenv("WEBHOOK_PORT", "8000"))
             tasks.append(start_webhook_server(port=webhook_port))
         else:
