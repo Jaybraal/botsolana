@@ -63,9 +63,13 @@ def score_token(token_info: dict) -> tuple[int, bool, str]:
             reasons.append(f"-30 edad {age:.1f}min [WR 27% - evitar]")
 
     # ── Liquidez ─────────────────────────────────────────────────────────
+    token_fresh = age is not None and age < 10
     if liq == 0:
-        score -= 25
-        reasons.append("-25 sin liquidez [WR 37%]")
+        if token_fresh:
+            reasons.append("~0 sin liquidez DexScreener (token <10min, normal)")
+        else:
+            score -= 25
+            reasons.append("-25 sin liquidez [WR 37%]")
     elif liq < 500:
         score -= 15
         reasons.append(f"-15 liq ${liq:.0f} (demasiado baja)")

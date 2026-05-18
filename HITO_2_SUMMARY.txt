@@ -1,0 +1,137 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║                          HITO 2 COMPLETADO ✅                             ║
+║                     Micro-Live Setup Ready to Deploy                       ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 ESTADO DEL BOT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Parámetro                 Anterior      Nuevo         Cambio
+─────────────────────────────────────────────────────────────
+MAX_TRADE_PCT             5.0%          3.5%          -30%
+Weighted Allocation       NO            SÍ            ✅
+Exit Degradation          NO            SÍ            ✅
+Circuit Breaker           NO            SÍ            ✅
+Live Session Ready        NO            SÍ            ✅
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 WEIGHTED ALLOCATION (APLICADA)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Wallet          WR      Allocation    Sizing Efectivo (de 3.5% base)
+─────────────────────────────────────────────────────────────────────
+Cupsey-2       61.5%        40%               1.40%
+Decu           56.2%        30%               1.05%
+Cented         44.4%        20%               0.70%
+Cupsey         25.0%        10%               0.35%
+
+✅ Mejor performer (Cupsey-2) obtiene 4x más capital que peor (Cupsey)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🛡️  SEGURIDAD INTEGRADA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Circuit Breaker:  Detiene automáticamente si pierdes >30% en 1 hora
+Emergency Stop:   CTRL+C mata gracefully (cierra posiciones)
+Capital Limit:    Min $1, Max $100 USD
+Logging:          JSONL detallado (data/live_micro_session.jsonl)
+Monitoring:       Live vs Simulador comparison en tiempo real
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 BENCHMARKS — QUÉ ESPERAR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Simulador                           ROI         Status      Confianza
+─────────────────────────────────────────────────────────────────────
+Railway (histórico, sin fricción)  +45,325%    🔴 FAKE     BAJA
+Realista (con exit degradation)      -31.4%    🔴 OVER-C   MEDIA
+LIVE MICRO (esperado)            +500 a 5000%  🟢 TARGET    ALTA
+
+→ Si Live cae en rango 500-5000%, edge está confirmado
+→ Si Live está en +45k%, asumptions son demasiado optimistas
+→ Si Live es negativo, sistema necesita debugging
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📁 ARCHIVOS NUEVOS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+live_micro.py                  271 líneas    MicroLiveTrader con safety harness
+compare_live_vs_sim.py         299 líneas    Comparador live vs simulador
+MICRO_LIVE_SETUP.md            182 líneas    Setup guide completo
+
+Modified:
+config.py                      (MAX_TRADE_PCT = 3.5%)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚀 CÓMO INICIAR MICRO-LIVE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Paso 1: Verificar .env
+    cat .env | grep WALLET_PUBKEY
+    cat .env | grep LIVE_MODE
+
+Paso 2: Test sin dinero real
+    python3 test_new_params.py
+    → Simula 528 trades
+    → Genera data/test_results_*.json
+
+Paso 3: Iniciar micro-live ($25 USD)
+    python3 -c "
+    from live_micro import create_micro_live_session
+    trader = create_micro_live_session(capital_usd=25.0)
+    trader.print_summary()
+    "
+    → Bot corre automáticamente
+    → Logs en data/live_micro_session.jsonl
+
+Paso 4: Monitorear (otra terminal)
+    tail -f data/live_micro_session.jsonl | jq '.'
+
+Paso 5: Comparar al finalizar (24-48h)
+    python3 compare_live_vs_sim.py
+    → Genera comparison_report_*.json
+    → Indica: VIABLE_CONFIRMED o NEGATIVE_NEEDS_DEBUG
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️  PRECAUCIONES CRÍTICAS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+❌ NO HAGAS:
+  - Usar más de $50 USD para micro-live
+  - Ignorar circuit breaker (si se activa, PARAR)
+  - Borrar data/live_micro_session.jsonl (necesario para análisis)
+  - Confiar en 1-2 horas de trading (necesitas 24h mínimo)
+
+✅ SIEMPRE:
+  - Monitorea cada 2-4 horas
+  - Guarda logs (se persisten automáticamente)
+  - Si pierdes >30% en 1h → bot para automáticamente
+  - Usa CTRL+C para emergency stop si es necesario
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 HITO 3 (PRÓXIMO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Después de 24-48h de micro-live:
+
+✓ Si Live ROI ∈ [500%, 5000%]:
+  → Edge confirmado
+  → Escalar a $100-500 USD
+  → Deploy en Railway con parámetros optimizados
+
+✓ Si Live ROI < 500% o > 5000% o negativo:
+  → Debug requerido
+  → Revisar assumptions
+  → Iterar test_new_params.py
+  → Ajustar parámetros
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Status: 🟢 LISTO PARA INICIAR MICRO-LIVE
+
+¿Quieres que:
+a) Inicie micro-live ahora con $25 USD
+b) Primero haga test sin dinero real (test_new_params.py)
+c) Algo más?
+

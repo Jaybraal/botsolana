@@ -51,7 +51,7 @@ TRAILING_PEAK    = float(os.getenv("AUTO_TRAILING_PEAK",    "20"))
 TRAILING_DROP    = float(os.getenv("AUTO_TRAILING_DROP",    "10"))
 MAX_HOLD_MIN     = float(os.getenv("AUTO_MAX_HOLD_MIN",     "12"))
 MAX_POSITIONS    = int(os.getenv("AUTO_MAX_POSITIONS",      "3"))
-MONITOR_INTERVAL = 30  # segundos entre checks de precio
+MONITOR_INTERVAL = 10  # segundos entre checks de precio
 
 # ── Estado en memoria ────────────────────────────────────────────────────────
 # {mint: {created_at, buys, name, evaluated, symbol}}
