@@ -227,6 +227,7 @@ def _pumpportal_to_swap(data: dict) -> dict | None:
         return {
             "wallet":              wallet,
             "program":             program,
+            "source":              "pumpportal",  # fast path en executor
             "token_in":            SOL_MINT,
             "token_out":           mint,
             "symbol_in":           "SOL",
@@ -240,6 +241,7 @@ def _pumpportal_to_swap(data: dict) -> dict | None:
         return {
             "wallet":              wallet,
             "program":             program,
+            "source":              "pumpportal",
             "token_in":            mint,
             "token_out":           SOL_MINT,
             "symbol_in":           mint[:6],

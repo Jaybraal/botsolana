@@ -41,6 +41,27 @@ log = get_logger("auto_scanner")
 
 SOL_MINT       = TOKENS["SOL"]
 PUMPPORTAL_WS  = "wss://pumpportal.fun/api/data"
+PUMPPORTAL_API = "https://pumpportal.fun/api/coin-data"
+
+# Caché de precio SOL en USD — se refresca cada 60s para no llamar CoinGecko en cada tick
+_sol_price_usd: float = 150.0
+_sol_price_ts:  float = 0.0
+
+def _get_sol_price_usd() -> float:
+    global _sol_price_usd, _sol_price_ts
+    if time.time() - _sol_price_ts < 60:
+        return _sol_price_usd
+    try:
+        r = httpx.get(
+            "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
+            timeout=3,
+        )
+        if r.status_code == 200:
+            _sol_price_usd = float(r.json().get("solana", {}).get("usd", _sol_price_usd))
+            _sol_price_ts = time.time()
+    except Exception:
+        pass
+    return _sol_price_usd
 
 # ── Config desde env ─────────────────────────────────────────────────────────
 EVAL_DELAY_MIN   = float(os.getenv("AUTO_EVAL_DELAY_MIN",   "7"))
@@ -63,44 +84,96 @@ _auto_positions: dict[str, dict] = {}
 _lock = asyncio.Lock()
 
 
-# ── Helpers DexScreener ───────────────────────────────────────────────────────
+# ── Helpers DexScreener + PumpPortal ─────────────────────────────────────────
 
-def _fetch_token_info(mint: str) -> dict | None:
-    """Obtiene datos actuales del token desde DexScreener. Retorna None si no hay datos."""
+def _fetch_pumpportal_price(mint: str) -> dict | None:
+    """
+    Obtiene precio de un token directamente desde la bonding curve de PumpPortal.
+    Usado como fallback cuando DexScreener aún no indexó el token (< ~15 min).
+    El precio se calcula: virtualSolReserves / virtualTokenReserves
+    """
     try:
-        pair = get_best_pair(mint)
-        if not pair:
+        r = httpx.get(PUMPPORTAL_API, params={"mint": mint}, timeout=3)
+        if r.status_code != 200:
             return None
-        liq  = float((pair.get("liquidity") or {}).get("usd") or 0)
-        mcap = float(pair.get("marketCap") or pair.get("fdv") or 0)
-        pc   = pair.get("priceChange") or {}
-        txns = (pair.get("txns") or {}).get("m5") or {}
-        created_ms = pair.get("pairCreatedAt") or 0
-        created_s  = created_ms // 1000 if created_ms > 1e10 else created_ms
-        age_min    = round((time.time() - created_s) / 60, 1) if created_s else None
-        dex_label  = (pair.get("dexId") or "").lower()
-        if "raydium" in dex_label:
-            program = "Raydium"
-        elif "pumpswap" in dex_label or "pump_amm" in dex_label:
-            program = "PumpSwap"
-        else:
-            program = "Pump.fun"
+        d = r.json()
+        v_sol = float(d.get("virtual_sol_reserves") or 0)
+        v_tok = float(d.get("virtual_token_reserves") or 0)
+        if v_sol <= 0 or v_tok <= 0:
+            return None
+        # Pump.fun tokens: SOL reserves en lamports (1e9), token reserves en unidades mínimas (1e6)
+        price_sol = (v_sol / 1e9) / (v_tok / 1e6)
+        price_usd = price_sol * _get_sol_price_usd()
+        mcap_usd  = float(d.get("market_cap") or d.get("usd_market_cap") or 0)
         return {
-            "liquidity_usd":   liq,
-            "mcap_usd":        mcap,
-            "price_change_1h": float(pc.get("h1") or 0),
-            "price_change_5m": float(pc.get("m5") or 0),
-            "buys_5m":         int(txns.get("buys") or 0),
-            "sells_5m":        int(txns.get("sells") or 0),
-            "token_age_min":   age_min,
-            "program":         program,
-            "price_usd":       float(pair.get("priceUsd") or 0),
-            "price_sol":       float(pair.get("priceNative") or 0),
-            "pair_address":    pair.get("pairAddress", ""),
+            "price_usd":     price_usd,
+            "price_sol":     price_sol,
+            "liquidity_usd": 0.0,   # bonding curve no tiene liquidez en el sentido de AMM
+            "mcap_usd":      mcap_usd,
+            "token_age_min": None,
+            "program":       "Pump.fun",
+            "buys_5m":       0,
+            "sells_5m":      0,
+            "price_change_1h": 0.0,
+            "price_change_5m": 0.0,
+            "pair_address":  "",
         }
     except Exception as e:
-        log.debug(f"[auto] DexScreener error {mint[:8]}: {e}")
+        log.debug(f"[auto] PumpPortal price error {mint[:8]}: {e}")
         return None
+
+
+def _fetch_token_info(mint: str) -> dict | None:
+    """
+    Obtiene datos actuales del token. Intenta DexScreener primero.
+    Si el token no está indexado (muy nuevo), usa PumpPortal API como fallback.
+    """
+    try:
+        pair = get_best_pair(mint)
+        if pair:
+            liq  = float((pair.get("liquidity") or {}).get("usd") or 0)
+            mcap = float(pair.get("marketCap") or pair.get("fdv") or 0)
+            pc   = pair.get("priceChange") or {}
+            txns = (pair.get("txns") or {}).get("m5") or {}
+            created_ms = pair.get("pairCreatedAt") or 0
+            created_s  = created_ms // 1000 if created_ms > 1e10 else created_ms
+            age_min    = round((time.time() - created_s) / 60, 1) if created_s else None
+            dex_label  = (pair.get("dexId") or "").lower()
+            if "raydium" in dex_label:
+                program = "Raydium"
+            elif "pumpswap" in dex_label or "pump_amm" in dex_label:
+                program = "PumpSwap"
+            else:
+                program = "Pump.fun"
+            price_usd = float(pair.get("priceUsd") or 0)
+            price_sol = float(pair.get("priceNative") or 0)
+            # Si DexScreener tiene el par pero sin precio, intentar PumpPortal
+            if price_usd <= 0:
+                pp = _fetch_pumpportal_price(mint)
+                if pp:
+                    price_usd = pp["price_usd"]
+                    price_sol = pp["price_sol"]
+            return {
+                "liquidity_usd":   liq,
+                "mcap_usd":        mcap,
+                "price_change_1h": float(pc.get("h1") or 0),
+                "price_change_5m": float(pc.get("m5") or 0),
+                "buys_5m":         int(txns.get("buys") or 0),
+                "sells_5m":        int(txns.get("sells") or 0),
+                "token_age_min":   age_min,
+                "program":         program,
+                "price_usd":       price_usd,
+                "price_sol":       price_sol,
+                "pair_address":    pair.get("pairAddress", ""),
+            }
+    except Exception as e:
+        log.debug(f"[auto] DexScreener error {mint[:8]}: {e}")
+
+    # Fallback: PumpPortal directo (token en bonding curve sin indexar aún)
+    pp = _fetch_pumpportal_price(mint)
+    if pp:
+        log.debug(f"[auto] {mint[:8]}: usando precio PumpPortal (sin DexScreener aún)")
+    return pp
 
 
 # ── Monitor de precio por posición autónoma ───────────────────────────────────
@@ -131,15 +204,24 @@ async def _monitor_position(mint: str, symbol: str):
         if mint not in _auto_positions:
             break
 
-        # Fetch precio actual
+        # Fetch precio actual — DexScreener con fallback a PumpPortal
         info = await asyncio.get_event_loop().run_in_executor(None, _fetch_token_info, mint)
         current_price = (info or {}).get("price_usd", 0)
+
+        # Última alternativa: precio guardado en posición (del WS de compra/monitor previo)
+        if current_price <= 0:
+            current_price = _auto_positions[mint].get("last_price_usd", 0)
+        else:
+            # Actualizar último precio conocido en la posición
+            _auto_positions[mint]["last_price_usd"] = current_price
 
         if current_price <= 0 or entry_price <= 0:
             hold_min = (time.time() - entry_time) / 60
             if hold_min >= MAX_HOLD_MIN:
                 log.warning(f"[auto] ⏰ Timeout {symbol} (sin precio) — cerrando tras {hold_min:.1f}min")
                 _trigger_sell(mint, symbol, 0.0, "timeout-sin-precio", program)
+            else:
+                log.debug(f"[auto] {symbol} sin precio aún — esperando ({hold_min:.1f}min)")
             continue
 
         pnl_pct = (current_price - entry_price) / entry_price * 100
@@ -180,9 +262,14 @@ def _trigger_sell(mint: str, symbol: str, current_price_usd: float, reason: str,
     """Envía señal de venta al executor/simulator y limpia la posición."""
     if mint not in _auto_positions:
         return
+
+    # Si el caller no tiene precio (timeout-sin-precio), usar el último conocido
+    if current_price_usd <= 0:
+        current_price_usd = _auto_positions[mint].get("last_price_usd", 0)
+
     _auto_positions.pop(mint, None)
 
-    sol_price = 150.0  # fallback; el simulator usa su propio precio
+    sol_price = _get_sol_price_usd()
     price_sol = (current_price_usd / sol_price) if current_price_usd > 0 and sol_price > 0 else 0.0
 
     sell_swap = {
@@ -247,6 +334,7 @@ async def _evaluate_token(mint: str):
     # Registrar posición antes de ejecutar para evitar duplicados
     _auto_positions[mint] = {
         "entry_price_usd": entry_price,
+        "last_price_usd":  entry_price,  # se actualiza en cada tick del monitor
         "entry_time":      time.time(),
         "peak_pct":        0.0,
         "symbol":          symbol,
@@ -316,6 +404,12 @@ async def _handle_token_trade(data: dict):
         return
     if _tracked[mint].get("evaluated"):
         return
+
+    # Guardar precio actual de la bonding curve desde reservas virtuales del WS
+    v_sol = float(data.get("vSolInBondingCurve") or 0)
+    v_tok = float(data.get("vTokensInBondingCurve") or 0)
+    if v_sol > 0 and v_tok > 0:
+        _tracked[mint]["last_price_sol"] = (v_sol / 1e9) / (v_tok / 1e6)
 
     if tx_type == "buy":
         _tracked[mint]["buys"] += 1

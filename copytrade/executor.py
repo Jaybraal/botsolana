@@ -382,47 +382,60 @@ def execute_copy(swap: dict) -> bool:
 
         _swap_program = swap.get("program", "")
 
-        # PROTECCIÓN 3: Verificar liquidez mínima en DexScreener
-        _min_liquidity = float(os.getenv("MIN_LIQUIDITY_USD", "5000"))
-        from utils.dexscreener import get_best_pair
-        _pair_info = get_best_pair(token_out)
-        _liquidity_usd = float((_pair_info or {}).get("liquidity", {}).get("usd", 0))
-        if _pair_info and _liquidity_usd < _min_liquidity:
-            log.warning(
-                f"[{label}] Liquidez ${_liquidity_usd:.0f} < ${_min_liquidity:.0f} — "
-                f"abortando para evitar slippage extremo"
-            )
-            return False
+        # FAST COPY: trades de PumpPortal WS de wallets objetivo — skip DexScreener y scorer.
+        # El razonamiento: si una wallet top (Theo, Cupsey-2, etc.) compra algo en Pump.fun,
+        # la señal ya fue validada por la wallet. Cada ms de latencia añadida aquí = peor precio.
+        # Variable FAST_COPY_PUMPPORTAL (default=true) controla este comportamiento.
+        _fast_copy = (
+            swap.get("source") == "pumpportal"
+            and os.getenv("FAST_COPY_PUMPPORTAL", "true").lower() == "true"
+        )
 
-        # SCORER: Evaluar token contra patrones Groq aprendidos de historial
-        # Si el scorer está activo, él decide — incluido si aceptar Pump.fun o no
-        # según lo que aprendió por wallet. Si scorer OFF, aplica el filtro AMM clásico.
-        _use_scorer = os.getenv("USE_GROQ_SCORER", "true").lower() == "true"
-        if _use_scorer:
-            from copytrade.scorer import should_copy
-            _pair_created_ms = (_pair_info or {}).get("pairCreatedAt") or 0
-            _pair_created_s  = _pair_created_ms // 1000 if _pair_created_ms > 1e10 else _pair_created_ms
-            _token_age_min   = round((time.time() - _pair_created_s) / 60, 1) if _pair_created_s else None
-            _token_info = {
-                "program":         _swap_program,
-                "liquidity_usd":   _liquidity_usd,
-                "token_age_min":   _token_age_min,
-                "mcap_usd":        float((_pair_info or {}).get("marketCap") or (_pair_info or {}).get("fdv") or 0),
-                "price_change_5m": float(((_pair_info or {}).get("priceChange") or {}).get("m5") or 0),
-                "price_change_1h": float(((_pair_info or {}).get("priceChange") or {}).get("h1") or 0),
-                "buys_5m":         int((((_pair_info or {}).get("txns") or {}).get("m5") or {}).get("buys") or 0),
-                "sells_5m":        int((((_pair_info or {}).get("txns") or {}).get("m5") or {}).get("sells") or 0),
-            }
-            _score_pass, _score_reason = should_copy(label, _token_info)
-            if not _score_pass:
-                log.info(f"[{label}] ❌ Scorer rechazó {swap['symbol_out']} — {_score_reason}")
+        _pair_info = None
+        _liquidity_usd = 0.0
+
+        if not _fast_copy:
+            # PROTECCIÓN 3: Verificar liquidez mínima en DexScreener (solo en modo normal)
+            _min_liquidity = float(os.getenv("MIN_LIQUIDITY_USD", "500"))
+            from utils.dexscreener import get_best_pair
+            _pair_info = get_best_pair(token_out)
+            _liquidity_usd = float((_pair_info or {}).get("liquidity", {}).get("usd", 0))
+            if _pair_info and _liquidity_usd < _min_liquidity:
+                log.warning(
+                    f"[{label}] Liquidez ${_liquidity_usd:.0f} < ${_min_liquidity:.0f} — "
+                    f"abortando para evitar slippage extremo"
+                )
                 return False
+
+            # SCORER: Evaluar token contra patrones Groq aprendidos de historial
+            _use_scorer = os.getenv("USE_GROQ_SCORER", "true").lower() == "true"
+            if _use_scorer:
+                from copytrade.scorer import should_copy
+                _pair_created_ms = (_pair_info or {}).get("pairCreatedAt") or 0
+                _pair_created_s  = _pair_created_ms // 1000 if _pair_created_ms > 1e10 else _pair_created_ms
+                _token_age_min   = round((time.time() - _pair_created_s) / 60, 1) if _pair_created_s else None
+                _token_info = {
+                    "program":         _swap_program,
+                    "liquidity_usd":   _liquidity_usd,
+                    "token_age_min":   _token_age_min,
+                    "mcap_usd":        float((_pair_info or {}).get("marketCap") or (_pair_info or {}).get("fdv") or 0),
+                    "price_change_5m": float(((_pair_info or {}).get("priceChange") or {}).get("m5") or 0),
+                    "price_change_1h": float(((_pair_info or {}).get("priceChange") or {}).get("h1") or 0),
+                    "buys_5m":         int((((_pair_info or {}).get("txns") or {}).get("m5") or {}).get("buys") or 0),
+                    "sells_5m":        int((((_pair_info or {}).get("txns") or {}).get("m5") or {}).get("sells") or 0),
+                }
+                _score_pass, _score_reason = should_copy(label, _token_info)
+                if not _score_pass:
+                    log.info(f"[{label}] ❌ Scorer rechazó {swap['symbol_out']} — {_score_reason}")
+                    return False
+            else:
+                # Fallback: filtro AMM clásico cuando scorer está desactivado
+                _only_amm = os.getenv("ONLY_AMM_SWAPS", "false").lower() == "true"
+                if _only_amm and _swap_program == "Pump.fun":
+                    log.info(f"[{label}] Ignorando {swap['symbol_out']} en Pump.fun BC (AMM filter)")
+                    return False
         else:
-            # Fallback: filtro AMM clásico cuando scorer está desactivado
-            _only_amm = os.getenv("ONLY_AMM_SWAPS", "true").lower() == "true"
-            if _only_amm and _swap_program == "Pump.fun":
-                log.info(f"[{label}] Ignorando {swap['symbol_out']} en Pump.fun BC (AMM filter)")
-                return False
+            log.info(f"[{label}] ⚡ FAST COPY {swap['symbol_out']} — skip DexScreener/scorer")
 
         our_balance = get_our_sol_balance()
         if our_balance == 0:
@@ -480,17 +493,17 @@ def execute_copy(swap: dict) -> bool:
         )
 
         # PROTECCIÓN 2: Pre-check de price impact ANTES de enviar TX (evita TX que van a fallar)
-        # Solo aplica si Jupiter tiene ruta — si no (token muy nuevo), deja pasar
-        from utils.jupiter import get_quote, calc_price_impact
-        _pre_quote = get_quote(swap["token_in"], token_out, amount_lamports)
-        if _pre_quote and calc_price_impact(_pre_quote) > MAX_PRICE_IMPACT:
-            log.warning(
-                f"[{label}] Price impact {calc_price_impact(_pre_quote):.2f}% > {MAX_PRICE_IMPACT}% — "
-                f"abortando para evitar TX fallida con pérdida de fees"
-            )
-            return False
-
+        # Skip en fast copy (token recién salido, Jupiter aún no lo conoce) y en Pump.fun BC.
         is_pumpfun_bc  = swap.get("program") == "Pump.fun"
+        if not _fast_copy and not is_pumpfun_bc:
+            from utils.jupiter import get_quote, calc_price_impact
+            _pre_quote = get_quote(swap["token_in"], token_out, amount_lamports)
+            if _pre_quote and calc_price_impact(_pre_quote) > MAX_PRICE_IMPACT:
+                log.warning(
+                    f"[{label}] Price impact {calc_price_impact(_pre_quote):.2f}% > {MAX_PRICE_IMPACT}% — "
+                    f"abortando para evitar TX fallida con pérdida de fees"
+                )
+                return False
         is_pumpswap    = swap.get("program") == "PumpSwap"
 
         # DRIFT: balance justo antes de ejecutar y timestamp de inicio
