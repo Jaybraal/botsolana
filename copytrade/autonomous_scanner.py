@@ -306,16 +306,53 @@ async def _evaluate_token(mint: str):
         return
 
     symbol = info.get("symbol", mint[:6])
-    log.info(f"[auto] 🔍 Evaluando {symbol} ({mint[:8]}...) | buys acumulados: {info.get('buys', 0)}")
+    ws_buys  = info.get("buys",  0)
+    ws_sells = info.get("sells", 0)
+    log.info(f"[auto] 🔍 Evaluando {symbol} ({mint[:8]}...) | buys WS: {ws_buys} | sells WS: {ws_sells}")
 
+    # Intentar DexScreener + PumpPortal API
     token_info = await asyncio.get_event_loop().run_in_executor(None, _fetch_token_info, mint)
-    if not token_info:
-        log.info(f"[auto] ❌ {symbol} — sin datos DexScreener, descartado")
-        return
 
-    # Combinar buys acumulados por WS con los de DexScreener (el más alto gana)
-    ws_buys = info.get("buys", 0)
+    # Fallback total: construir token_info desde datos WS acumulados en _tracked
+    # Esto garantiza que SIEMPRE podemos scorear el token aunque ninguna API externa responda.
+    if not token_info:
+        sol_price = _get_sol_price_usd()
+        v_sol     = info.get("v_sol", 0)
+        v_tok     = info.get("v_tok", 0)
+        mcap_sol  = info.get("mcap_sol", 0)
+        age_min   = round((time.time() - info["created_at"]) / 60, 1)
+
+        price_sol = (v_sol / 1e9) / (v_tok / 1e6) if v_sol > 0 and v_tok > 0 else info.get("last_price_sol", 0)
+        price_usd = price_sol * sol_price if price_sol > 0 else 0
+        mcap_usd  = mcap_sol * sol_price
+        # Liquidez en bonding curve ≈ SOL que hay en la curva (no es AMM pero da referencia)
+        liq_usd   = (v_sol / 1e9) * sol_price if v_sol > 0 else 0
+
+        if price_usd <= 0 and ws_buys == 0:
+            log.info(f"[auto] ❌ {symbol} — sin datos en ninguna fuente (token muerto?)")
+            return
+
+        token_info = {
+            "price_usd":       price_usd,
+            "price_sol":       price_sol,
+            "liquidity_usd":   liq_usd,
+            "mcap_usd":        mcap_usd,
+            "token_age_min":   age_min,
+            "program":         "Pump.fun",
+            "buys_5m":         ws_buys,
+            "sells_5m":        ws_sells,
+            "price_change_1h": 0.0,
+            "price_change_5m": 0.0,
+            "pair_address":    "",
+        }
+        log.info(
+            f"[auto] 📡 {symbol} — datos desde WS (sin DexScreener) | "
+            f"edad {age_min:.1f}min | mcap ${mcap_usd:,.0f} | liq ${liq_usd:,.0f} | buys {ws_buys}"
+        )
+
+    # Combinar buys WS con los de DexScreener (el más alto gana)
     token_info["buys_5m"] = max(token_info.get("buys_5m", 0), ws_buys)
+    token_info["sells_5m"] = max(token_info.get("sells_5m", 0), ws_sells)
 
     score, passed, reason = score_token(token_info)
     log.info(
@@ -381,12 +418,23 @@ async def _handle_new_token(data: dict):
     if not mint or mint in _tracked:
         return
 
+    # Guardar datos iniciales de la bonding curve que vienen en el evento create
+    v_sol    = float(data.get("vSolInBondingCurve") or 0)
+    v_tok    = float(data.get("vTokensInBondingCurve") or 0)
+    mcap_sol = float(data.get("marketCapSol") or 0)
+
     _tracked[mint] = {
-        "created_at": time.time(),
-        "buys":       0,
-        "symbol":     symbol,
-        "name":       name,
-        "evaluated":  False,
+        "created_at":  time.time(),
+        "buys":        0,
+        "sells":       0,
+        "symbol":      symbol,
+        "name":        name,
+        "evaluated":   False,
+        # Datos bonding curve del WS — se actualizan en cada trade
+        "v_sol":       v_sol,
+        "v_tok":       v_tok,
+        "mcap_sol":    mcap_sol,
+        "last_price_sol": (v_sol / 1e9) / (v_tok / 1e6) if v_sol > 0 and v_tok > 0 else 0,
     }
 
     log.info(f"[auto] 🆕 Nuevo token: {name} ({mint[:8]}...) — evaluando en {EVAL_DELAY_MIN:.0f}min")
@@ -405,14 +453,21 @@ async def _handle_token_trade(data: dict):
     if _tracked[mint].get("evaluated"):
         return
 
-    # Guardar precio actual de la bonding curve desde reservas virtuales del WS
-    v_sol = float(data.get("vSolInBondingCurve") or 0)
-    v_tok = float(data.get("vTokensInBondingCurve") or 0)
+    # Actualizar datos de bonding curve con cada trade
+    v_sol    = float(data.get("vSolInBondingCurve") or 0)
+    v_tok    = float(data.get("vTokensInBondingCurve") or 0)
+    mcap_sol = float(data.get("marketCapSol") or 0)
     if v_sol > 0 and v_tok > 0:
+        _tracked[mint]["v_sol"]  = v_sol
+        _tracked[mint]["v_tok"]  = v_tok
         _tracked[mint]["last_price_sol"] = (v_sol / 1e9) / (v_tok / 1e6)
+    if mcap_sol > 0:
+        _tracked[mint]["mcap_sol"] = mcap_sol
 
     if tx_type == "buy":
         _tracked[mint]["buys"] += 1
+    elif tx_type == "sell":
+        _tracked[mint]["sells"] = _tracked[mint].get("sells", 0) + 1
         buys = _tracked[mint]["buys"]
 
         # Momentum trigger: muchos buys antes del tiempo programado
