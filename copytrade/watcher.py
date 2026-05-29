@@ -25,6 +25,10 @@ from utils.logger import get_logger
 
 log = get_logger("watcher")
 
+# Cola de swaps: los watchers producen, el consumer consume en su propio coroutine
+# maxsize=200 evita acumulación infinita — si la cola se llena, se descarta el swap más viejo
+_swap_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+
 SOL_MINT         = TOKENS["SOL"]
 PUMPPORTAL_WS    = "wss://pumpportal.fun/api/data"
 # Wallets cuyas transacciones queremos ver en PumpPortal
@@ -145,9 +149,11 @@ async def handle_message(msg: str):
             return
         last_copy[rate_key] = now
 
-        # Ejecutar copy en hilo separado para no bloquear el WebSocket
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, execute_copy, swap)
+        # Poner en cola — no bloquea el WebSocket, el consumer async lo procesa
+        try:
+            _swap_queue.put_nowait(swap)
+        except asyncio.QueueFull:
+            log.warning(f"[Helius] Cola llena — descartando swap de {label} ({swap['symbol_out']})")
 
     except Exception as e:
         log.error(f"Error procesando mensaje: {e}")
@@ -303,8 +309,11 @@ async def handle_pumpportal_message(msg: str):
             return
         last_copy[rate_key] = now
 
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, execute_copy, swap)
+        # Poner en cola — el consumer async lo procesa sin bloquear el WS
+        try:
+            _swap_queue.put_nowait(swap)
+        except asyncio.QueueFull:
+            log.warning(f"[PP] Cola llena — descartando swap de {label} ({swap['symbol_out']})")
 
     except Exception as e:
         log.error(f"[PumpPortal] Error procesando mensaje: {e}")
@@ -357,6 +366,22 @@ async def watch_pumpportal():
         retry_delay = min(retry_delay * 1.5, 120)
 
 
+async def _swap_consumer():
+    """
+    Consumer de la cola de swaps — corre en paralelo con los watchers.
+    Procesa cada swap con execute_copy (async) sin bloquear los WebSockets.
+    Si un trade tarda 10s, el WS sigue recibiendo mensajes sin interrupción.
+    """
+    while True:
+        swap = await _swap_queue.get()
+        try:
+            await execute_copy(swap)
+        except Exception as e:
+            log.error(f"[consumer] Error en execute_copy: {e}")
+        finally:
+            _swap_queue.task_done()
+
+
 async def watch_all():
     """Corre Helius, PumpPortal, scanner autónomo y ETH watcher en paralelo."""
     from utils.blockchain import detect_blockchain
@@ -370,6 +395,9 @@ async def watch_all():
     eth_wallets = [w for w in TARGET_WALLETS if detect_blockchain(w) == "ethereum"]
 
     tasks = []
+
+    # Consumer async de la cola — siempre activo si hay algo que procesar
+    tasks.append(_swap_consumer())
 
     # Copy-trade watchers (solo si hay wallets configuradas)
     if solana_wallets:

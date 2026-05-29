@@ -27,6 +27,9 @@ _SWAP_URLS = [
     "https://public.jupiterapi.com/swap",
 ]
 
+# Cliente async compartido — reutiliza conexiones HTTP/2 entre llamadas
+_async_client = httpx.AsyncClient(timeout=10)
+
 
 def get_quote(input_mint: str, output_mint: str, amount_lamports: int) -> dict | None:
     """
@@ -100,3 +103,64 @@ def calc_price_impact(quote: dict) -> float:
 
 def out_amount(quote: dict) -> int:
     return int(quote.get("outAmount", 0))
+
+
+# ── Versiones async (hot path) ────────────────────────────────────────────
+
+async def get_quote_async(input_mint: str, output_mint: str, amount_lamports: int) -> dict | None:
+    """Quote de Jupiter — async para no bloquear el event loop."""
+    params = {
+        "inputMint":        input_mint,
+        "outputMint":       output_mint,
+        "amount":           amount_lamports,
+        "slippageBps":      SLIPPAGE_BPS,
+        "onlyDirectRoutes": "false",
+    }
+    for url in _QUOTE_URLS:
+        try:
+            r = await _async_client.get(url, params=params)
+            if r.status_code != 200:
+                try:
+                    err  = r.json()
+                    code = err.get("errorCode", "")
+                    msg  = err.get("error", r.text[:120])
+                except Exception:
+                    code, msg = "", r.text[:120]
+                if code == "COULD_NOT_FIND_ANY_ROUTE":
+                    log.warning(f"Jupiter sin ruta para {output_mint[:8]}... — token sin liquidez")
+                else:
+                    log.warning(f"Jupiter quote HTTP {r.status_code} [{code}]: {msg}")
+                return None
+            return r.json()
+        except httpx.TimeoutException:
+            log.warning(f"Jupiter quote timeout en {url[:40]}...")
+            continue
+        except Exception as e:
+            log.warning(f"Jupiter quote error ({url[:40]}...): {e}")
+            continue
+    return None
+
+
+async def get_swap_transaction_async(quote: dict, user_pubkey: str) -> str | None:
+    """TX de swap de Jupiter — async para no bloquear el event loop."""
+    body = {
+        "quoteResponse":             quote,
+        "userPublicKey":             user_pubkey,
+        "wrapAndUnwrapSol":          True,
+        "dynamicComputeUnitLimit":   True,
+        "prioritizationFeeLamports": "auto",
+    }
+    for url in _SWAP_URLS:
+        try:
+            r = await _async_client.post(url, json=body)
+            if r.status_code != 200:
+                log.warning(f"Jupiter swap TX HTTP {r.status_code}: {r.text[:150]}")
+                return None
+            return r.json().get("swapTransaction")
+        except httpx.TimeoutException:
+            log.warning(f"Jupiter swap TX timeout ({url[:40]}...)")
+            continue
+        except Exception as e:
+            log.warning(f"Jupiter swap TX error ({url[:40]}...): {e}")
+            continue
+    return None

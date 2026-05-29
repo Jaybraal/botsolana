@@ -3,6 +3,7 @@ Ejecuta el copy trade usando Jupiter API.
 Modo proporcional: invierte el mismo % del capital que la wallet objetivo.
 """
 
+import asyncio
 import base64
 import json
 import os
@@ -14,6 +15,7 @@ from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 from solders.message import MessageV0, Message
 from solana.rpc.api import Client
+from solana.rpc.async_api import AsyncClient
 from solana.rpc.types import TokenAccountOpts, TxOpts
 
 from config import (
@@ -23,12 +25,16 @@ from config import (
     TOKENS, get_max_trade_pct_by_balance,
 )
 from utils.jupiter import get_quote, get_swap_transaction, calc_price_impact, out_amount
+from utils.jupiter import get_quote_async, get_swap_transaction_async
 from utils.pumpfun import get_pump_buy_tx, get_pump_sell_tx
+from utils.pumpfun import get_pump_buy_tx_async, get_pump_sell_tx_async
 from utils.logger import get_logger
 from copytrade import simulator
 
-log    = get_logger("executor")
-client = Client(RPC_HTTP)
+log          = get_logger("executor")
+client       = Client(RPC_HTTP)        # síncrono — solo para recover_open_positions al arrancar
+_async_rpc   = AsyncClient(RPC_HTTP)   # async — hot path de trading
+_async_http  = httpx.AsyncClient(timeout=5)  # para CoinGecko y otras llamadas HTTP async
 
 os.makedirs("data", exist_ok=True)
 COPYTRADES_FILE  = "data/copytrades.json"
@@ -184,14 +190,18 @@ def _is_stop_loss_triggered(current_balance: int) -> bool:
 
 
 def _get_sol_price_usd() -> float:
-    """Precio SOL en USD con caché de 60s — evita llamar CoinGecko en cada trade."""
+    """Precio SOL en USD con caché de 60s (versión sync para compatibilidad)."""
+    return _sol_price_cache if _sol_price_cache > 0 else 150.0
+
+
+async def _get_sol_price_usd_async() -> float:
+    """Precio SOL en USD con caché de 60s — async, no bloquea el event loop."""
     global _sol_price_cache, _sol_price_cache_ts
     if time.time() - _sol_price_cache_ts < 60 and _sol_price_cache > 0:
         return _sol_price_cache
     try:
-        resp = httpx.get(
-            "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
-            timeout=3,
+        resp = await _async_http.get(
+            "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
         )
         if resp.status_code == 200:
             price = float(resp.json().get("solana", {}).get("usd", 0))
@@ -276,14 +286,26 @@ def load_keypair() -> Keypair | None:
 
 
 def get_our_sol_balance() -> int:
-    """Balance SOL en lamports con caché de 5s — evita RPC en cada trade."""
+    """Balance SOL sync — solo para recover_open_positions al arrancar."""
+    if not WALLET_PUBKEY:
+        return 0
+    try:
+        resp = client.get_balance(Pubkey.from_string(WALLET_PUBKEY))
+        return resp.value
+    except Exception as e:
+        log.error(f"Error obteniendo balance SOL: {e}")
+        return 0
+
+
+async def _get_sol_balance_async() -> int:
+    """Balance SOL async con caché 5s — hot path de trading."""
     global _sol_balance_cache, _sol_balance_cache_ts
     if time.time() - _sol_balance_cache_ts < 5 and _sol_balance_cache > 0:
         return _sol_balance_cache
     if not WALLET_PUBKEY:
         return 0
     try:
-        resp = client.get_balance(Pubkey.from_string(WALLET_PUBKEY))
+        resp = await _async_rpc.get_balance(Pubkey.from_string(WALLET_PUBKEY))
         _sol_balance_cache = resp.value
         _sol_balance_cache_ts = time.time()
         return _sol_balance_cache
@@ -293,12 +315,7 @@ def get_our_sol_balance() -> int:
 
 
 def get_our_token_balance(mint: str) -> tuple[int, float]:
-    """
-    Retorna (raw_amount, ui_amount) de un token en nuestra wallet.
-    raw_amount: unidades mínimas (para Jupiter)
-    ui_amount:  amount con decimales aplicados (para PumpPortal)
-    Retorna (0, 0.0) si no tenemos el token.
-    """
+    """Balance de token sync — solo para recover_open_positions."""
     if not WALLET_PUBKEY:
         return 0, 0.0
     try:
@@ -319,15 +336,38 @@ def get_our_token_balance(mint: str) -> tuple[int, float]:
         return 0, 0.0
 
 
+async def _get_token_balance_async(mint: str) -> tuple[int, float]:
+    """Balance de token async — hot path (venta)."""
+    if not WALLET_PUBKEY:
+        return 0, 0.0
+    try:
+        opts = TokenAccountOpts(mint=Pubkey.from_string(mint))
+        resp = await _async_rpc.get_token_accounts_by_owner_json_parsed(
+            Pubkey.from_string(WALLET_PUBKEY), opts
+        )
+        accounts = resp.value
+        if not accounts:
+            return 0, 0.0
+        raw_total = 0
+        ui_total  = 0.0
+        for acc in accounts:
+            info = acc.account.data.parsed["info"]["tokenAmount"]
+            raw_total += int(info["amount"])
+            ui_total  += float(info.get("uiAmount") or 0)
+        return raw_total, ui_total
+    except Exception as e:
+        log.error(f"Error obteniendo balance token {mint[:8]}...: {e}")
+        return 0, 0.0
+
+
 # ── Cálculo de monto proporcional ────────────────────────────────────────────
 
-def calc_proportional_amount(swap: dict, our_balance_lamports: int) -> int | None:
-    """
-    Calcula cuántos lamports de SOL invertir usando % fijo del balance propio.
-    El % sube progresivamente con las ganancias acumuladas (SCALING_TIERS).
-    No usa el capital de la wallet copiada para evitar trades microscópicos.
-    """
-    dynamic_pct = _get_dynamic_trade_pct(our_balance_lamports)
+async def calc_proportional_amount_async(swap: dict, our_balance_lamports: int) -> int | None:
+    """Calcula lamports a invertir usando % dinámico del balance. Async para obtener precio SOL."""
+    sol_price = await _get_sol_price_usd_async()
+    balance_sol = our_balance_lamports / LAMPORTS_PER_SOL
+    balance_usd = balance_sol * sol_price
+    dynamic_pct = get_max_trade_pct_by_balance(balance_usd)
     our_amount  = int(our_balance_lamports * dynamic_pct)
 
     min_lamports = int(MIN_TRADE_SOL * LAMPORTS_PER_SOL)
@@ -343,9 +383,9 @@ def calc_proportional_amount(swap: dict, our_balance_lamports: int) -> int | Non
 
 # ── Execute ───────────────────────────────────────────────────────────────────
 
-def execute_copy(swap: dict) -> bool:
+async def execute_copy(swap: dict) -> bool:
     """
-    Ejecuta un copy del swap detectado en modo proporcional.
+    Ejecuta un copy del swap detectado en modo proporcional. Completamente async.
 
     - COMPRA (SOL→token): proporcional al % que metió la wallet.
     - VENTA  (token→SOL): vende todo el balance que tengamos de ese token.
@@ -418,8 +458,8 @@ def execute_copy(swap: dict) -> bool:
         if not _fast_copy:
             # PROTECCIÓN 3: Verificar liquidez mínima en DexScreener (solo en modo normal)
             _min_liquidity = float(os.getenv("MIN_LIQUIDITY_USD", "500"))
-            from utils.dexscreener import get_best_pair
-            _pair_info = get_best_pair(token_out)
+            from utils.dexscreener import get_best_pair_async
+            _pair_info = await get_best_pair_async(token_out)
             _liquidity_usd = float((_pair_info or {}).get("liquidity", {}).get("usd", 0))
             if _pair_info and _liquidity_usd < _min_liquidity:
                 log.warning(
@@ -458,7 +498,7 @@ def execute_copy(swap: dict) -> bool:
         else:
             log.info(f"[{label}] ⚡ FAST COPY {swap['symbol_out']} — skip DexScreener/scorer")
 
-        our_balance = get_our_sol_balance()
+        our_balance = await _get_sol_balance_async()
         if our_balance == 0:
             log.error("No se pudo obtener balance SOL propio.")
             return False
@@ -485,7 +525,7 @@ def execute_copy(swap: dict) -> bool:
         if _is_stop_loss_triggered(our_balance):
             return False
 
-        amount_lamports = calc_proportional_amount(swap, our_balance)
+        amount_lamports = await calc_proportional_amount_async(swap, our_balance)
         if amount_lamports is None:
             return False
 
@@ -528,20 +568,20 @@ def execute_copy(swap: dict) -> bool:
         is_pumpswap    = swap.get("program") == "PumpSwap"
 
         # DRIFT: balance justo antes de ejecutar y timestamp de inicio
-        _bal_before_buy = get_our_sol_balance()
+        _bal_before_buy = await _get_sol_balance_async()
         _buy_started_at = time.time()
 
         sig = None
         if is_pumpfun_bc:
-            log.info(f"[{label}] Bonding curve — usando PumpPortal (pump) para {swap['symbol_out']}")
-            sig = _send_pumpfun_buy(token_out, amount_lamports, keypair)
+            log.info(f"[{label}] Bonding curve — usando PumpPortal async para {swap['symbol_out']}")
+            sig = await _send_pumpfun_buy_async(token_out, amount_lamports, keypair)
         elif is_pumpswap:
-            sig = _send_swap(swap["token_in"], token_out, amount_lamports, keypair)
+            sig = await _send_swap_async(swap["token_in"], token_out, amount_lamports, keypair)
             if not sig:
                 log.info(f"[{label}] Jupiter falló — intentando PumpPortal (pumpswap) para {swap['symbol_out']}")
-                sig = _send_pumpfun_buy_pumpswap(token_out, amount_lamports, keypair)
+                sig = await _send_pumpfun_buy_pumpswap_async(token_out, amount_lamports, keypair)
         else:
-            sig = _send_swap(swap["token_in"], token_out, amount_lamports, keypair)
+            sig = await _send_swap_async(swap["token_in"], token_out, amount_lamports, keypair)
 
         if not sig:
             log.warning(f"[{label}] No se pudo ejecutar buy — {swap['symbol_out']} (programa: {swap.get('program','')})")
@@ -549,7 +589,8 @@ def execute_copy(swap: dict) -> bool:
             return False
 
         # DRIFT: balance justo después — diferencia = SOL real gastado (incluye fees de red)
-        _bal_after_buy   = get_our_sol_balance()
+        _sol_balance_cache_ts = 0  # invalidar caché tras TX
+        _bal_after_buy   = await _get_sol_balance_async()
         _sol_spent_real  = (_bal_before_buy - _bal_after_buy) / LAMPORTS_PER_SOL
         _buy_latency_ms  = (time.time() - _buy_started_at) * 1000
 
@@ -594,15 +635,15 @@ def execute_copy(swap: dict) -> bool:
             log.debug(f"[{label}] Venta de {swap['symbol_in']} ignorada — no tenemos posición abierta")
             return False
 
-        raw_balance, ui_balance = get_our_token_balance(token_in)
+        raw_balance, ui_balance = await _get_token_balance_async(token_in)
         if raw_balance == 0:
             # El nodo RPC puede tardar varios segundos en reflejar una cuenta recién creada.
-            # Reintentar hasta 5 veces con 3s de pausa si la posición lleva < 60s abierta.
+            # Reintentar hasta 5 veces con 3s de pausa async si la posición lleva < 60s abierta.
             opened_at = _open_copies[token_in].get("opened", 0)
             if time.time() - opened_at < 60:
                 for _attempt in range(5):
-                    time.sleep(3)
-                    raw_balance, ui_balance = get_our_token_balance(token_in)
+                    await asyncio.sleep(3)
+                    raw_balance, ui_balance = await _get_token_balance_async(token_in)
                     if raw_balance > 0:
                         log.info(f"[{label}] Balance visible tras {(_attempt+1)*3}s de espera — {ui_balance:.4f} tokens")
                         break
@@ -622,28 +663,28 @@ def execute_copy(swap: dict) -> bool:
         is_pumpfun_bc = buy_program == "Pump.fun"
         sig = None
         if is_pumpfun_bc:
-            # Token de Pump.fun: probar BC → PumpSwap AMM → Jupiter
-            log.info(f"[{label}] Intentando PumpPortal (pump) — {ui_balance:.4f} tokens")
-            sig = _send_pumpfun_sell(token_in, ui_balance, keypair, pool="pump")
+            # Token de Pump.fun: probar BC → PumpSwap AMM → Jupiter (todo async)
+            log.info(f"[{label}] Intentando PumpPortal async (pump) — {ui_balance:.4f} tokens")
+            sig = await _send_pumpfun_sell_async(token_in, ui_balance, keypair, pool="pump")
             if not sig:
-                log.info(f"[{label}] Intentando PumpPortal (pumpswap) — token graduado?")
-                sig = _send_pumpfun_sell(token_in, ui_balance, keypair, pool="pumpswap")
+                log.info(f"[{label}] Intentando PumpPortal async (pumpswap) — token graduado?")
+                sig = await _send_pumpfun_sell_async(token_in, ui_balance, keypair, pool="pumpswap")
             if not sig:
-                log.info(f"[{label}] Intentando Jupiter como último recurso...")
-                sig = _send_swap(token_in, SOL_MINT, raw_balance, keypair)
+                log.info(f"[{label}] Intentando Jupiter async como último recurso...")
+                sig = await _send_swap_async(token_in, SOL_MINT, raw_balance, keypair)
         else:
-            # Token de Jupiter/Raydium/Orca: Jupiter → PumpSwap como fallback
-            sig = _send_swap(token_in, SOL_MINT, raw_balance, keypair)
+            sig = await _send_swap_async(token_in, SOL_MINT, raw_balance, keypair)
             if not sig:
-                log.info(f"[{label}] Jupiter falló — intentando PumpPortal (pumpswap)...")
-                sig = _send_pumpfun_sell(token_in, ui_balance, keypair, pool="pumpswap")
+                log.info(f"[{label}] Jupiter falló — intentando PumpPortal async (pumpswap)...")
+                sig = await _send_pumpfun_sell_async(token_in, ui_balance, keypair, pool="pumpswap")
 
         if not sig:
             log.warning(f"[{label}] Sell falló (pump + pumpswap + Jupiter) — {swap['symbol_in']} — posición queda abierta")
             return False
 
-        # DRIFT: balance antes de la venta
-        _bal_before_sell = get_our_sol_balance()
+        # DRIFT: balance antes de la venta (invalidar caché para leer valor real)
+        _sol_balance_cache_ts = 0
+        _bal_before_sell = await _get_sol_balance_async()
 
         pos = _open_copies.pop(token_in, {})
         _failed_buy_attempts.pop(token_in, None)
@@ -651,7 +692,7 @@ def execute_copy(swap: dict) -> bool:
         hold_min = (time.time() - pos.get("opened", time.time())) / 60
 
         # DRIFT: balance después — diferencia = SOL real recibido (neto de fees)
-        _bal_after_sell      = get_our_sol_balance()
+        _bal_after_sell      = await _get_sol_balance_async()
         _sol_received_real   = (_bal_after_sell - _bal_before_sell) / LAMPORTS_PER_SOL
         _sol_spent_real      = pos.get("sol_spent_real", 0.0)
         _real_pnl_sol        = _sol_received_real - _sol_spent_real
@@ -703,13 +744,13 @@ def execute_copy(swap: dict) -> bool:
         return False
 
 
-# ── Enviar swap via Jupiter ───────────────────────────────────────────────────
+# ── Enviar TX async ────────────────────────────────────────────────────────────
 
-def _send_swap(token_in: str, token_out: str, amount: int, keypair: Keypair) -> str | None:
-    """Pide quote a Jupiter, firma y envía. Retorna la signature o None."""
-    quote = get_quote(token_in, token_out, amount)
+async def _send_swap_async(token_in: str, token_out: str, amount: int, keypair: Keypair) -> str | None:
+    """Jupiter quote + swap TX completamente async. Sin bloquear el event loop."""
+    quote = await get_quote_async(token_in, token_out, amount)
     if not quote:
-        log.error("No se pudo obtener quote de Jupiter.")
+        log.error("No se pudo obtener quote de Jupiter (async).")
         return None
 
     impact = calc_price_impact(quote)
@@ -717,75 +758,55 @@ def _send_swap(token_in: str, token_out: str, amount: int, keypair: Keypair) -> 
         log.warning(f"Price impact muy alto ({impact:.2f}% > {MAX_PRICE_IMPACT}%) — abortando.")
         return None
 
-    swap_tx_b64 = get_swap_transaction(quote, WALLET_PUBKEY)
+    swap_tx_b64 = await get_swap_transaction_async(quote, WALLET_PUBKEY)
     if not swap_tx_b64:
-        log.error("No se pudo obtener swap transaction de Jupiter.")
+        log.error("No se pudo obtener swap TX de Jupiter (async).")
         return None
 
-    try:
-        raw_bytes = base64.b64decode(swap_tx_b64)
-        tx        = VersionedTransaction.from_bytes(raw_bytes)
-        tx_signed = VersionedTransaction(tx.message, [keypair])
-        resp      = client.send_raw_transaction(
-            bytes(tx_signed),
-            opts=TxOpts(skip_preflight=False, preflight_commitment="confirmed"),
-        )
-        # Retornamos la signature inmediatamente — no esperamos confirm (ahorra 3-30s)
-        return str(resp.value)
-    except Exception as e:
-        log.error(f"Error enviando TX Jupiter: {e}")
-        return None
+    return await _sign_and_send_async(base64.b64decode(swap_tx_b64), keypair, f"Jupiter {token_out[:8]}")
 
 
-# ── Enviar swap via PumpPortal (bonding curve) ────────────────────────────────
-
-def _send_pumpfun_buy(mint: str, amount_lamports: int, keypair: Keypair) -> str | None:
-    """Compra via PumpPortal en la bonding curve. Retorna signature o None."""
+async def _send_pumpfun_buy_async(mint: str, amount_lamports: int, keypair: Keypair) -> str | None:
+    """Compra async en bonding curve via PumpPortal."""
     amount_sol = amount_lamports / LAMPORTS_PER_SOL
-    tx_bytes = get_pump_buy_tx(WALLET_PUBKEY, mint, amount_sol)
+    tx_bytes = await get_pump_buy_tx_async(WALLET_PUBKEY, mint, amount_sol)
     if not tx_bytes:
         return None
-    return _sign_and_send(tx_bytes, keypair, f"PumpPortal buy {mint[:8]}...")
+    return await _sign_and_send_async(tx_bytes, keypair, f"PumpPortal buy {mint[:8]}")
 
 
-def _send_pumpfun_buy_pumpswap(mint: str, amount_lamports: int, keypair: Keypair) -> str | None:
-    """Compra en PumpSwap AMM (token graduado). Usa multi-backend con fallbacks automáticos."""
-    from utils.pumpfun import _multi_backend
+async def _send_pumpfun_buy_pumpswap_async(mint: str, amount_lamports: int, keypair: Keypair) -> str | None:
+    """Compra async en PumpSwap AMM."""
+    from utils.pumpfun import _multi_backend_async
     amount_sol = amount_lamports / LAMPORTS_PER_SOL
     payload = {
-        "publicKey":        WALLET_PUBKEY,
-        "action":           "buy",
-        "mint":             mint,
-        "denominatedInSol": "true",
-        "amount":           round(amount_sol, 6),
-        "slippage":         15,
-        "priorityFee":      0.0002,
-        "pool":             "pumpswap",
+        "publicKey": WALLET_PUBKEY, "action": "buy", "mint": mint,
+        "denominatedInSol": "true", "amount": round(amount_sol, 6),
+        "slippage": 15, "priorityFee": 0.0002, "pool": "pumpswap",
     }
-    tx_bytes = _multi_backend(payload, f"buy pumpswap {mint[:8]}")
+    tx_bytes = await _multi_backend_async(payload, f"buy pumpswap {mint[:8]}")
     if not tx_bytes:
         return None
-    return _sign_and_send(tx_bytes, keypair, f"PumpSwap buy [multi-backend] {mint[:8]}...")
+    return await _sign_and_send_async(tx_bytes, keypair, f"PumpSwap buy {mint[:8]}")
 
 
-def _send_pumpfun_sell(mint: str, ui_amount: float, keypair: Keypair, pool: str = "pump") -> str | None:
-    """Vende via PumpPortal. ui_amount en tokens con decimales (ej: 1234.56, NO raw units)."""
-    tx_bytes = get_pump_sell_tx(WALLET_PUBKEY, mint, ui_amount, pool=pool)
+async def _send_pumpfun_sell_async(mint: str, ui_amount: float, keypair: Keypair, pool: str = "pump") -> str | None:
+    """Venta async via PumpPortal."""
+    tx_bytes = await get_pump_sell_tx_async(WALLET_PUBKEY, mint, ui_amount, pool=pool)
     if not tx_bytes:
         return None
-    return _sign_and_send(tx_bytes, keypair, f"PumpPortal sell [{pool}] {mint[:8]}...")
+    return await _sign_and_send_async(tx_bytes, keypair, f"PumpPortal sell [{pool}] {mint[:8]}")
 
 
-def _sign_and_send(tx_bytes: bytes, keypair: Keypair, desc: str) -> str | None:
-    """Deserializa, reemplaza blockhash, firma y envía. Retorna signature o None."""
+async def _sign_and_send_async(tx_bytes: bytes, keypair: Keypair, desc: str) -> str | None:
+    """Firma y envía TX usando RPC async. Retorna signature sin esperar confirmación."""
     try:
         tx = VersionedTransaction.from_bytes(tx_bytes)
 
-        # Obtener blockhash fresco — el de PumpPortal puede haber expirado (~60-90s de vida)
-        bh_resp    = client.get_latest_blockhash(commitment="confirmed")
-        fresh_bh   = bh_resp.value.blockhash
+        # Blockhash fresco — async RPC
+        bh_resp  = await _async_rpc.get_latest_blockhash(commitment="confirmed")
+        fresh_bh = bh_resp.value.blockhash
 
-        # Reconstruir mensaje con blockhash fresco (soporta V0 y legacy)
         msg = tx.message
         if isinstance(msg, MessageV0):
             new_msg = MessageV0(
@@ -796,21 +817,73 @@ def _sign_and_send(tx_bytes: bytes, keypair: Keypair, desc: str) -> str | None:
                 address_table_lookups=list(msg.address_table_lookups),
             )
         else:
-            new_msg = Message.new_with_blockhash(
-                msg.instructions,
-                keypair.pubkey(),
-                fresh_bh,
-            )
+            new_msg = Message.new_with_blockhash(msg.instructions, keypair.pubkey(), fresh_bh)
 
         tx_signed = VersionedTransaction(new_msg, [keypair])
-        resp = client.send_raw_transaction(
+        resp = await _async_rpc.send_raw_transaction(
             bytes(tx_signed),
             opts=TxOpts(skip_preflight=False, preflight_commitment="confirmed"),
         )
-        # Retornamos la signature inmediatamente — no esperamos confirm (ahorra 3-30s)
+        # Retornar sig inmediatamente — no esperar confirmación (ahorra 3-30s)
         return str(resp.value)
     except Exception as e:
-        log.error(f"[{desc}] Error firmando/enviando TX: {e}")
+        log.error(f"[{desc}] Error firmando/enviando TX async: {e}")
+        return None
+
+
+# ── Envío sync (solo para recover_open_positions al arrancar) ─────────────────
+
+def _send_swap(token_in: str, token_out: str, amount: int, keypair: Keypair) -> str | None:
+    """Jupiter sync — solo usado en recover_open_positions al inicio."""
+    quote = get_quote(token_in, token_out, amount)
+    if not quote:
+        return None
+    impact = calc_price_impact(quote)
+    if impact > MAX_PRICE_IMPACT:
+        log.warning(f"Price impact muy alto ({impact:.2f}%) — abortando.")
+        return None
+    swap_tx_b64 = get_swap_transaction(quote, WALLET_PUBKEY)
+    if not swap_tx_b64:
+        return None
+    try:
+        raw_bytes = base64.b64decode(swap_tx_b64)
+        tx        = VersionedTransaction.from_bytes(raw_bytes)
+        tx_signed = VersionedTransaction(tx.message, [keypair])
+        resp      = client.send_raw_transaction(
+            bytes(tx_signed),
+            opts=TxOpts(skip_preflight=False, preflight_commitment="confirmed"),
+        )
+        return str(resp.value)
+    except Exception as e:
+        log.error(f"Error enviando TX Jupiter sync: {e}")
+        return None
+
+
+# ── Funciones sync para recover_open_positions ────────────────────────────────
+
+def _send_pumpfun_sell(mint: str, ui_amount: float, keypair: Keypair, pool: str = "pump") -> str | None:
+    """Venta sync de PumpPortal — solo usada en recover_open_positions al arrancar."""
+    tx_bytes = get_pump_sell_tx(WALLET_PUBKEY, mint, ui_amount, pool=pool)
+    if not tx_bytes:
+        return None
+    try:
+        tx        = VersionedTransaction.from_bytes(tx_bytes)
+        bh_resp   = client.get_latest_blockhash(commitment="confirmed")
+        fresh_bh  = bh_resp.value.blockhash
+        msg = tx.message
+        if isinstance(msg, MessageV0):
+            new_msg = MessageV0(
+                header=msg.header, account_keys=list(msg.account_keys),
+                recent_blockhash=fresh_bh, instructions=list(msg.instructions),
+                address_table_lookups=list(msg.address_table_lookups),
+            )
+        else:
+            new_msg = Message.new_with_blockhash(msg.instructions, keypair.pubkey(), fresh_bh)
+        tx_signed = VersionedTransaction(new_msg, [keypair])
+        resp = client.send_raw_transaction(bytes(tx_signed), opts=TxOpts(skip_preflight=False, preflight_commitment="confirmed"))
+        return str(resp.value)
+    except Exception as e:
+        log.error(f"[sync sell] Error: {e}")
         return None
 
 
