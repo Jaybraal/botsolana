@@ -71,9 +71,9 @@ def _multi_backend(payload: dict, desc: str) -> bytes | None:
 
 
 def _try_pumpportal(payload: dict, desc: str) -> bytes | None:
-	"""Intenta PumpPortal con timeout de 8s."""
+	"""Intenta PumpPortal con timeout de 4s — falla rápido para activar fallback."""
 	try:
-		r = httpx.post(PUMPPORTAL_URL, json=payload, timeout=8)
+		r = httpx.post(PUMPPORTAL_URL, json=payload, timeout=4)
 		if r.status_code == 200 and r.content:
 			log.debug(f"[pumpfun] ✅ PumpPortal OK — {desc}")
 			return r.content
@@ -88,7 +88,7 @@ def _try_pumpportal(payload: dict, desc: str) -> bytes | None:
 def _try_pumpapi(payload: dict, desc: str) -> bytes | None:
 	"""Intenta PumpAPI.fun (API alternativa pública)."""
 	try:
-		r = httpx.post(PUMPAPI_URL, json=payload, timeout=8)
+		r = httpx.post(PUMPAPI_URL, json=payload, timeout=4)
 		if r.status_code != 200:
 			log.debug(f"[pumpfun] ⚠️ PumpAPI HTTP {r.status_code} — fallando a siguiente backend")
 			return None

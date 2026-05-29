@@ -57,6 +57,14 @@ _initial_balance: int = 0
 # Tokens confirmados como irrecuperables (rugged, sin liquidez) — persistido en disco
 _dead_tokens: set[str] = set()
 
+# Caché de precio SOL en USD — se refresca cada 60s (igual que simulator.py)
+_sol_price_cache: float = 0.0
+_sol_price_cache_ts: float = 0.0
+
+# Caché de balance SOL propio — se refresca cada 5s (rara vez cambia más rápido)
+_sol_balance_cache: int = 0
+_sol_balance_cache_ts: float = 0.0
+
 
 def _load_dead_tokens():
     global _dead_tokens
@@ -176,15 +184,23 @@ def _is_stop_loss_triggered(current_balance: int) -> bool:
 
 
 def _get_sol_price_usd() -> float:
-    """Obtiene el precio actual de SOL en USD. Retorna $20 por defecto si falla."""
+    """Precio SOL en USD con caché de 60s — evita llamar CoinGecko en cada trade."""
+    global _sol_price_cache, _sol_price_cache_ts
+    if time.time() - _sol_price_cache_ts < 60 and _sol_price_cache > 0:
+        return _sol_price_cache
     try:
-        import httpx
-        resp = httpx.get("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd", timeout=3)
+        resp = httpx.get(
+            "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
+            timeout=3,
+        )
         if resp.status_code == 200:
-            return float(resp.json().get("solana", {}).get("usd", 20))
+            price = float(resp.json().get("solana", {}).get("usd", 0))
+            if price > 0:
+                _sol_price_cache = price
+                _sol_price_cache_ts = time.time()
     except Exception:
         pass
-    return 20.0  # fallback
+    return _sol_price_cache if _sol_price_cache > 0 else 150.0
 
 def _get_dynamic_trade_pct(current_balance: int) -> float:
     """
@@ -260,15 +276,20 @@ def load_keypair() -> Keypair | None:
 
 
 def get_our_sol_balance() -> int:
-    """Retorna nuestro balance de SOL en lamports, o 0 si falla."""
+    """Balance SOL en lamports con caché de 5s — evita RPC en cada trade."""
+    global _sol_balance_cache, _sol_balance_cache_ts
+    if time.time() - _sol_balance_cache_ts < 5 and _sol_balance_cache > 0:
+        return _sol_balance_cache
     if not WALLET_PUBKEY:
         return 0
     try:
         resp = client.get_balance(Pubkey.from_string(WALLET_PUBKEY))
-        return resp.value
+        _sol_balance_cache = resp.value
+        _sol_balance_cache_ts = time.time()
+        return _sol_balance_cache
     except Exception as e:
         log.error(f"Error obteniendo balance SOL: {e}")
-        return 0
+        return _sol_balance_cache if _sol_balance_cache > 0 else 0
 
 
 def get_our_token_balance(mint: str) -> tuple[int, float]:
@@ -709,9 +730,8 @@ def _send_swap(token_in: str, token_out: str, amount: int, keypair: Keypair) -> 
             bytes(tx_signed),
             opts=TxOpts(skip_preflight=False, preflight_commitment="confirmed"),
         )
-        sig  = str(resp.value)
-        conf = client.confirm_transaction(resp.value, commitment="confirmed")
-        return sig if conf.value else None
+        # Retornamos la signature inmediatamente — no esperamos confirm (ahorra 3-30s)
+        return str(resp.value)
     except Exception as e:
         log.error(f"Error enviando TX Jupiter: {e}")
         return None
@@ -787,12 +807,8 @@ def _sign_and_send(tx_bytes: bytes, keypair: Keypair, desc: str) -> str | None:
             bytes(tx_signed),
             opts=TxOpts(skip_preflight=False, preflight_commitment="confirmed"),
         )
-        sig  = str(resp.value)
-        conf = client.confirm_transaction(resp.value, commitment="confirmed")
-        if conf.value:
-            return sig
-        log.warning(f"[{desc}] TX enviada pero no confirmada: {sig[:16]}...")
-        return None
+        # Retornamos la signature inmediatamente — no esperamos confirm (ahorra 3-30s)
+        return str(resp.value)
     except Exception as e:
         log.error(f"[{desc}] Error firmando/enviando TX: {e}")
         return None
