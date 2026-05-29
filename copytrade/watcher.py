@@ -51,10 +51,14 @@ async def subscribe_wallet(ws, wallet: str, sub_id: int):
     log.info(f"Suscrito a wallet: {wallet[:8]}...{wallet[-4:]}")
 
 
-def fetch_transaction(sig: str) -> dict | None:
-    """Obtiene los detalles completos de una transacción."""
+# Cliente HTTP async compartido para llamadas RPC de watcher
+_rpc_client = httpx.AsyncClient(timeout=10)
+
+
+async def fetch_transaction_async(sig: str) -> dict | None:
+    """getTransaction async — no bloquea el event loop durante el RPC call."""
     try:
-        r = httpx.post(RPC_HTTP, json={
+        r = await _rpc_client.post(RPC_HTTP, json={
             "jsonrpc": "2.0",
             "id":      1,
             "method":  "getTransaction",
@@ -66,9 +70,8 @@ def fetch_transaction(sig: str) -> dict | None:
                     "commitment":                     "confirmed",
                 }
             ]
-        }, timeout=15)
-        data = r.json()
-        return data.get("result")
+        })
+        return r.json().get("result")
     except Exception as e:
         log.error(f"Error fetching tx {sig[:12]}...: {e}")
         return None
@@ -103,8 +106,8 @@ async def handle_message(msg: str):
 
         log.debug(f"Nueva tx detectada: {sig[:16]}...")
 
-        # Fetch detalles
-        tx = fetch_transaction(sig)
+        # Fetch async — no bloquea el event loop mientras espera el RPC
+        tx = await fetch_transaction_async(sig)
         if not tx:
             log.debug(f"TX no encontrada (aún procesando?): {sig[:16]}...")
             return
@@ -366,18 +369,18 @@ async def watch_pumpportal():
         retry_delay = min(retry_delay * 1.5, 120)
 
 
-async def _swap_consumer():
+async def _swap_consumer(worker_id: int):
     """
-    Consumer de la cola de swaps — corre en paralelo con los watchers.
-    Procesa cada swap con execute_copy (async) sin bloquear los WebSockets.
-    Si un trade tarda 10s, el WS sigue recibiendo mensajes sin interrupción.
+    Consumer de la cola de swaps. Corre N instancias en paralelo (ver watch_all).
+    Cada worker procesa un swap independiente → N trades simultáneos posibles.
+    Si un trade tarda 5s (Jupiter), los otros workers siguen procesando.
     """
     while True:
         swap = await _swap_queue.get()
         try:
             await execute_copy(swap)
         except Exception as e:
-            log.error(f"[consumer] Error en execute_copy: {e}")
+            log.error(f"[consumer-{worker_id}] Error en execute_copy: {e}")
         finally:
             _swap_queue.task_done()
 
@@ -396,8 +399,11 @@ async def watch_all():
 
     tasks = []
 
-    # Consumer async de la cola — siempre activo si hay algo que procesar
-    tasks.append(_swap_consumer())
+    # 3 consumers en paralelo — cada uno puede procesar un trade simultáneamente.
+    # Si Theo y Cupsey compran al mismo tiempo, ambos se ejecutan sin esperar.
+    NUM_CONSUMERS = int(os.getenv("SWAP_CONSUMERS", "3"))
+    for i in range(NUM_CONSUMERS):
+        tasks.append(_swap_consumer(i + 1))
 
     # Copy-trade watchers (solo si hay wallets configuradas)
     if solana_wallets:
