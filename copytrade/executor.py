@@ -37,7 +37,7 @@ _async_rpc   = AsyncClient(RPC_HTTP)   # async — hot path de trading
 _async_http  = httpx.AsyncClient(timeout=5)  # para CoinGecko y otras llamadas HTTP async
 
 os.makedirs("data", exist_ok=True)
-COPYTRADES_FILE  = "data/copytrades.json"
+COPYTRADES_FILE  = "data/copytrades.jsonl"
 DEAD_TOKENS_FILE = "data/dead_tokens.json"
 DRIFT_LOG_FILE   = "data/execution_drift.jsonl"
 
@@ -70,6 +70,13 @@ _sol_price_cache_ts: float = 0.0
 # Caché de balance SOL propio — se refresca cada 5s (rara vez cambia más rápido)
 _sol_balance_cache: int = 0
 _sol_balance_cache_ts: float = 0.0
+
+# Caché de keypair — decodificado una sola vez al inicio
+_keypair_cache: "Keypair | None" = None
+
+# Caché de blockhash — válido ~90s, refrescado en background cada 45s
+_blockhash_cache: str | None = None
+_blockhash_cache_ts: float = 0.0
 
 
 def _load_dead_tokens():
@@ -260,26 +267,22 @@ def _log_drift_summary(entry: dict):
 # ── Persistencia ─────────────────────────────────────────────────────────────
 
 def _append_copytrade(entry: dict):
-    data = []
-    if os.path.exists(COPYTRADES_FILE):
-        try:
-            with open(COPYTRADES_FILE) as f:
-                data = json.load(f)
-        except Exception:
-            pass
-    data.append(entry)
-    with open(COPYTRADES_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    with open(COPYTRADES_FILE, "a") as f:
+        f.write(json.dumps(entry) + "\n")
 
 
 # ── Wallet / balance ──────────────────────────────────────────────────────────
 
 def load_keypair() -> Keypair | None:
+    global _keypair_cache
+    if _keypair_cache is not None:
+        return _keypair_cache
     if not WALLET_PRIVKEY:
         return None
     try:
         import base58
-        return Keypair.from_bytes(base58.b58decode(WALLET_PRIVKEY))
+        _keypair_cache = Keypair.from_bytes(base58.b58decode(WALLET_PRIVKEY))
+        return _keypair_cache
     except Exception as e:
         log.error(f"Error cargando keypair: {e}")
         return None
@@ -557,8 +560,7 @@ async def execute_copy(swap: dict) -> bool:
         # Skip en fast copy (token recién salido, Jupiter aún no lo conoce) y en Pump.fun BC.
         is_pumpfun_bc  = swap.get("program") == "Pump.fun"
         if not _fast_copy and not is_pumpfun_bc:
-            from utils.jupiter import get_quote, calc_price_impact
-            _pre_quote = get_quote(swap["token_in"], token_out, amount_lamports)
+            _pre_quote = await get_quote_async(swap["token_in"], token_out, amount_lamports)
             if _pre_quote and calc_price_impact(_pre_quote) > MAX_PRICE_IMPACT:
                 log.warning(
                     f"[{label}] Price impact {calc_price_impact(_pre_quote):.2f}% > {MAX_PRICE_IMPACT}% — "
@@ -800,12 +802,18 @@ async def _send_pumpfun_sell_async(mint: str, ui_amount: float, keypair: Keypair
 
 async def _sign_and_send_async(tx_bytes: bytes, keypair: Keypair, desc: str) -> str | None:
     """Firma y envía TX usando RPC async. Retorna signature sin esperar confirmación."""
+    global _blockhash_cache, _blockhash_cache_ts
     try:
         tx = VersionedTransaction.from_bytes(tx_bytes)
 
-        # Blockhash fresco — async RPC
-        bh_resp  = await _async_rpc.get_latest_blockhash(commitment="confirmed")
-        fresh_bh = bh_resp.value.blockhash
+        # Usar blockhash cacheado si tiene <60s — evita RPC call en hot path
+        if _blockhash_cache and (time.time() - _blockhash_cache_ts) < 60:
+            fresh_bh = _blockhash_cache
+        else:
+            bh_resp = await _async_rpc.get_latest_blockhash(commitment="confirmed")
+            _blockhash_cache = bh_resp.value.blockhash
+            _blockhash_cache_ts = time.time()
+            fresh_bh = _blockhash_cache
 
         msg = tx.message
         if isinstance(msg, MessageV0):
@@ -822,13 +830,41 @@ async def _sign_and_send_async(tx_bytes: bytes, keypair: Keypair, desc: str) -> 
         tx_signed = VersionedTransaction(new_msg, [keypair])
         resp = await _async_rpc.send_raw_transaction(
             bytes(tx_signed),
-            opts=TxOpts(skip_preflight=False, preflight_commitment="confirmed"),
+            opts=TxOpts(skip_preflight=True, preflight_commitment="confirmed"),
         )
         # Retornar sig inmediatamente — no esperar confirmación (ahorra 3-30s)
         return str(resp.value)
     except Exception as e:
         log.error(f"[{desc}] Error firmando/enviando TX async: {e}")
         return None
+
+
+async def _refresh_blockhash_loop():
+    """Renueva el blockhash cacheado cada 45s en background — elimina RPC call del hot path."""
+    global _blockhash_cache, _blockhash_cache_ts
+    while True:
+        try:
+            bh_resp = await _async_rpc.get_latest_blockhash(commitment="confirmed")
+            _blockhash_cache = bh_resp.value.blockhash
+            _blockhash_cache_ts = time.time()
+        except Exception as e:
+            log.debug(f"[blockhash refresh] {e}")
+        await asyncio.sleep(45)
+
+
+async def _refresh_balance_loop():
+    """Renueva el balance SOL cacheado cada 4s en background — siempre fresco en hot path."""
+    global _sol_balance_cache, _sol_balance_cache_ts
+    if not WALLET_PUBKEY:
+        return
+    while True:
+        try:
+            resp = await _async_rpc.get_balance(Pubkey.from_string(WALLET_PUBKEY))
+            _sol_balance_cache = resp.value
+            _sol_balance_cache_ts = time.time()
+        except Exception as e:
+            log.debug(f"[balance refresh] {e}")
+        await asyncio.sleep(4)
 
 
 # ── Envío sync (solo para recover_open_positions al arrancar) ─────────────────

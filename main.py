@@ -94,16 +94,25 @@ def _print_wallets_panel():
 
 
 def _print_copytrade_summary():
-    path = "data/copytrades.json"
-    if not os.path.exists(path):
-        console.print("[dim]No hay copy trades registrados aún.[/]")
-        return
-    try:
-        with open(path) as f:
-            trades = json.load(f)
-    except Exception:
-        return
+    path = "data/copytrades.jsonl"
+    trades = []
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        trades.append(json.loads(line))
+        except Exception:
+            return
+    elif os.path.exists("data/copytrades.json"):
+        try:
+            with open("data/copytrades.json") as f:
+                trades = json.load(f)
+        except Exception:
+            return
     if not trades:
+        console.print("[dim]No hay copy trades registrados aún.[/]")
         return
 
     table = Table(
