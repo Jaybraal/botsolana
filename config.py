@@ -5,6 +5,8 @@ load_dotenv()
 # --- RPC Solana ---
 RPC_HTTP = os.getenv("SOLANA_RPC_HTTP", "https://api.mainnet-beta.solana.com")
 RPC_WS   = os.getenv("SOLANA_RPC_WS",  "wss://api.mainnet-beta.solana.com")
+# Fallback WS cuando el primario devuelve 429 (ej: cuota Helius agotada)
+RPC_WS_FALLBACK = os.getenv("SOLANA_RPC_WS_FALLBACK", "wss://api.mainnet-beta.solana.com")
 
 # --- RPC Ethereum ---
 ETH_RPC_HTTP = os.getenv("ETH_RPC_HTTP", "https://eth.llamarpc.com")

@@ -10,6 +10,7 @@ lo que reduce significativamente la latencia para tokens en Pump.fun BC.
 
 import json
 import asyncio
+import os
 import ssl
 import certifi
 import websockets
@@ -18,7 +19,7 @@ import time
 import random
 from datetime import datetime
 
-from config import RPC_HTTP, RPC_WS, TARGET_WALLETS, WALLET_LABELS, TOKENS
+from config import RPC_HTTP, RPC_WS, RPC_WS_FALLBACK, TARGET_WALLETS, WALLET_LABELS, TOKENS
 from copytrade.decoder import detect_swap
 from copytrade.executor import execute_copy
 from utils.logger import get_logger
@@ -163,7 +164,7 @@ async def handle_message(msg: str):
 
 
 async def watch():
-    """Loop principal del watcher Helius."""
+    """Loop principal del watcher Helius con fallback automático en caso de 429."""
     if not TARGET_WALLETS:
         log.error("No hay wallets en TARGET_WALLETS. Configura el .env.")
         return
@@ -172,20 +173,33 @@ async def watch():
     for w in TARGET_WALLETS:
         log.info(f"  → {w}")
 
+    PRIMARY_WS = RPC_WS
+    FALLBACK_WS = RPC_WS_FALLBACK
+    # 30 min de cooldown: tiempo que se usa el fallback antes de reintentar el primary
+    HELIUS_COOLDOWN_S = int(os.getenv("HELIUS_COOLDOWN_S", "1800"))
+
+    current_ws = PRIMARY_WS
+    primary_429_until = 0.0  # timestamp hasta el que NO reintentar el primary
     retry_delay = 5
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
 
     while True:
+        # Volver al primary (Helius) si ya expiró el cooldown
+        if current_ws == FALLBACK_WS and time.time() > primary_429_until:
+            current_ws = PRIMARY_WS
+            log.info("[Helius] Reintentando RPC primario tras cooldown de 429...")
+
         try:
             async with websockets.connect(
-                RPC_WS,
+                current_ws,
                 ssl=ssl_ctx,
                 ping_interval=20,
                 ping_timeout=10,
                 close_timeout=5,
                 max_size=10 * 1024 * 1024,
             ) as ws:
-                log.info(f"WebSocket conectado: {RPC_WS[:40]}...")
+                label = "Helius" if current_ws == PRIMARY_WS else "Fallback-RPC"
+                log.info(f"[{label}] WebSocket conectado: {current_ws[:40]}...")
                 retry_delay = 5
 
                 for i, wallet in enumerate(TARGET_WALLETS):
@@ -199,7 +213,23 @@ async def watch():
         except OSError as e:
             log.error(f"[Helius] Error de red: {e}. Reconectando en {retry_delay:.0f}s...")
         except Exception as e:
-            log.error(f"[Helius] Error inesperado: {e}. Reconectando en {retry_delay:.0f}s...")
+            if "429" in str(e):
+                if current_ws == PRIMARY_WS and FALLBACK_WS != PRIMARY_WS:
+                    # Cambiar al fallback inmediatamente; reintentar Helius en HELIUS_COOLDOWN_S
+                    primary_429_until = time.time() + HELIUS_COOLDOWN_S
+                    current_ws = FALLBACK_WS
+                    retry_time = datetime.fromtimestamp(primary_429_until).strftime("%H:%M:%S")
+                    log.warning(
+                        f"[Helius] Rate limit (429) — cambiando a RPC fallback. "
+                        f"Reintentando Helius a las {retry_time} ({HELIUS_COOLDOWN_S // 60}min)"
+                    )
+                    retry_delay = 5
+                    continue
+                else:
+                    # Fallback también devolvió 429 o no hay fallback distinto
+                    log.error(f"[Helius] Rate limit (429). Reconectando en {retry_delay:.0f}s...")
+            else:
+                log.error(f"[Helius] Error inesperado: {e}. Reconectando en {retry_delay:.0f}s...")
 
         jitter = retry_delay * random.uniform(0.8, 1.4)
         await asyncio.sleep(jitter)
