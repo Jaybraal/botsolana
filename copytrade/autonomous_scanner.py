@@ -33,7 +33,22 @@ import websockets
 
 from config import TOKENS
 from copytrade.executor import execute_copy
-from copytrade.stat_scorer import score_token
+import os as _os
+if _os.getenv("SNIPE_MODE", "false").lower() == "true":
+    from copytrade.snipe_scorer import score_token
+    from copytrade.signals import is_elite_signal, clear_mint as _clear_mint
+else:
+    from copytrade.stat_scorer import score_token as _stat_score
+
+    def score_token(token_info: dict, elite_signal: bool = False) -> tuple[int, bool, str]:
+        return _stat_score(token_info)
+
+    def is_elite_signal(mint: str) -> bool:
+        return False
+
+    def _clear_mint(mint: str) -> None:
+        pass
+
 from utils.dexscreener import get_best_pair
 from utils.logger import get_logger
 
@@ -268,6 +283,7 @@ def _trigger_sell(mint: str, symbol: str, current_price_usd: float, reason: str,
         current_price_usd = _auto_positions[mint].get("last_price_usd", 0)
 
     _auto_positions.pop(mint, None)
+    _clear_mint(mint)
 
     sol_price = _get_sol_price_usd()
     price_sol = (current_price_usd / sol_price) if current_price_usd > 0 and sol_price > 0 else 0.0
@@ -354,7 +370,8 @@ async def _evaluate_token(mint: str):
     token_info["buys_5m"] = max(token_info.get("buys_5m", 0), ws_buys)
     token_info["sells_5m"] = max(token_info.get("sells_5m", 0), ws_sells)
 
-    score, passed, reason = score_token(token_info)
+    elite = is_elite_signal(mint)
+    score, passed, reason = score_token(token_info, elite_signal=elite)
     log.info(
         f"[auto] {'✅ COMPRAR' if passed else '❌ SKIP'} {symbol} | "
         f"score={score} | {reason}"
