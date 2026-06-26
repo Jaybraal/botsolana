@@ -19,9 +19,13 @@ import time
 import random
 from datetime import datetime
 
-from config import RPC_HTTP, RPC_WS, RPC_WS_FALLBACK, TARGET_WALLETS, WALLET_LABELS, TOKENS
+from config import (
+    RPC_HTTP, RPC_WS, RPC_WS_FALLBACK, TARGET_WALLETS,
+    WALLET_LABELS, TOKENS, ELITE_WALLETS, SNIPE_MODE,
+)
 from copytrade.decoder import detect_swap
 from copytrade.executor import execute_copy
+from copytrade.signals import register_elite_buy
 from utils.logger import get_logger
 
 log = get_logger("watcher")
@@ -124,6 +128,11 @@ async def handle_message(msg: str):
             return
         label = WALLET_LABELS[wallet_addr]
         swap["wallet_label"] = label
+
+        if SNIPE_MODE and wallet_addr in ELITE_WALLETS:
+            token_out = swap.get("token_out", "")
+            if token_out and token_out != TOKENS.get("SOL", ""):
+                register_elite_buy(token_out)
 
         # Timestamp real del bloque — medir desde cuándo la wallet compró, no desde cuando detectamos
         block_time = tx.get("blockTime")
@@ -314,6 +323,11 @@ async def handle_pumpportal_message(msg: str):
         wallet_addr  = swap["wallet"]
         label        = WALLET_LABELS.get(wallet_addr, f"{wallet_addr[:8]}...")
         swap["wallet_label"] = label
+
+        if SNIPE_MODE and wallet_addr in ELITE_WALLETS:
+            token_out = swap.get("token_out", "")
+            if token_out and token_out != TOKENS.get("SOL", ""):
+                register_elite_buy(token_out)
 
         # Timestamp del trade para medir hold real
         ts_ms = data.get("timestamp")

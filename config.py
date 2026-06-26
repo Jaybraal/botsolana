@@ -46,6 +46,16 @@ WALLET_LABELS: dict[str, str] = {
     "0xb3b088d37f03f82e8caaf019191dbaab6bf9d6cd": "ETH-Wallet-2",
 }
 
+# Wallets con WR real > 84% (excluyen RC 0% y Trey 48.6%)
+ELITE_WALLETS: frozenset[str] = frozenset({
+    "Bi4rd5FH5bYEN8scZ7wevxNZyNmKHdaBcvewdPFxYdLt",  # Theo    89.3%
+    "6S8GezkxYUfZy9JPtYnanbcZTMB87Wjt1qx3c6ELajKC",  # Nyhrox  87.1%
+    "2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f",  # Cupsey  84.9%
+    "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9",  # Decu    84.4%
+})
+
+SNIPE_MODE = os.getenv("SNIPE_MODE", "false").lower() == "true"
+
 # --- Weighted Wallet Allocation (NUEVO) ---
 # Asigna porcentaje de capital dinámicamente según performance histórica
 # Basado en win rate real de cada wallet
