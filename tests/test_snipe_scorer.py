@@ -32,11 +32,12 @@ MOCK_PATTERNS = {
 
 @pytest.fixture(autouse=True)
 def patch_patterns(tmp_path):
+    import importlib
+    import copytrade.snipe_scorer as m
     p = tmp_path / "snipe_patterns.json"
     p.write_text(json.dumps(MOCK_PATTERNS))
     os.environ["PATTERNS_PATH"] = str(p)
-    import importlib
-    import copytrade.snipe_scorer as m
+    importlib.reload(m)
     m._patterns = None
     yield
     m._patterns = None
