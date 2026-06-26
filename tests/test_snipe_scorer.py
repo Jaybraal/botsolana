@@ -100,8 +100,10 @@ def test_score_clamped_0_100():
 
 
 def test_missing_patterns_raises():
+    import importlib
     import copytrade.snipe_scorer as m
-    m._patterns = None
     os.environ["PATTERNS_PATH"] = "/nonexistent/path.json"
+    importlib.reload(m)
+    m._patterns = None
     with pytest.raises(FileNotFoundError, match="snipe_patterns.json"):
         m.score_token({"token_age_min": 2.0})

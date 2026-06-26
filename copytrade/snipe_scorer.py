@@ -13,17 +13,17 @@ from utils.logger import get_logger
 
 log = get_logger("snipe_scorer")
 
+PATTERNS_PATH = os.getenv("PATTERNS_PATH", "data/snipe_patterns.json")
 _patterns: dict | None = None
 
 
 def _load() -> dict:
     global _patterns
     if _patterns is None:
-        patterns_path = os.getenv("PATTERNS_PATH", "data/snipe_patterns.json")
-        p = Path(patterns_path)
+        p = Path(PATTERNS_PATH)
         if not p.exists():
             raise FileNotFoundError(
-                f"snipe_patterns.json no encontrado en {patterns_path}. "
+                f"snipe_patterns.json no encontrado en {PATTERNS_PATH}. "
                 "Ejecuta: python3 -m data_collector.snipe_trainer"
             )
         with open(p) as f:
