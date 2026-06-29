@@ -10,14 +10,14 @@ Flujo:
   6. Monitor de precio cada 30s → aplica stop loss / take profit / trailing / timeout
 
 Variables de entorno:
-  AUTO_EVAL_DELAY_MIN   = 7     # minutos antes de evaluar un token nuevo
-  AUTO_MOMENTUM_BUYS    = 150   # buys acumulados para evaluar antes del tiempo
-  AUTO_STOP_LOSS_PCT    = -15   # % de caída → vender
-  AUTO_TAKE_PROFIT_PCT  = 40    # % de ganancia → vender
-  AUTO_TRAILING_PEAK    = 20    # % de ganancia mínima para activar trailing
-  AUTO_TRAILING_DROP    = 10    # % de caída desde el pico → vender con trailing
-  AUTO_MAX_HOLD_MIN     = 12    # minutos máximos antes de cerrar forzado
-  AUTO_MAX_POSITIONS    = 3     # máximo de posiciones autónomas simultáneas
+  AUTO_EVAL_DELAY_MIN   = 5     # minutos antes de evaluar un token nuevo
+  AUTO_MOMENTUM_BUYS    = 80    # buys acumulados para evaluar antes del tiempo
+  AUTO_STOP_LOSS_PCT    = -8    # % de caída → vender (era -15, demasiado lento para PumpFun)
+  AUTO_TAKE_PROFIT_PCT  = 25    # % de ganancia → vender (era 40, asegurar ganancias antes)
+  AUTO_TRAILING_PEAK    = 15    # % de ganancia mínima para activar trailing
+  AUTO_TRAILING_DROP    = 7     # % de caída desde el pico → vender con trailing
+  AUTO_MAX_HOLD_MIN     = 7     # minutos máximos antes de cerrar forzado
+  AUTO_MAX_POSITIONS    = 2     # máximo de posiciones autónomas simultáneas
 """
 
 import asyncio
@@ -79,14 +79,14 @@ def _get_sol_price_usd() -> float:
     return _sol_price_usd
 
 # ── Config desde env ─────────────────────────────────────────────────────────
-EVAL_DELAY_MIN   = float(os.getenv("AUTO_EVAL_DELAY_MIN",   "7"))
-MOMENTUM_BUYS    = int(os.getenv("AUTO_MOMENTUM_BUYS",      "150"))
-STOP_LOSS_PCT    = float(os.getenv("AUTO_STOP_LOSS_PCT",    "-15"))
-TAKE_PROFIT_PCT  = float(os.getenv("AUTO_TAKE_PROFIT_PCT",  "40"))
-TRAILING_PEAK    = float(os.getenv("AUTO_TRAILING_PEAK",    "20"))
-TRAILING_DROP    = float(os.getenv("AUTO_TRAILING_DROP",    "10"))
-MAX_HOLD_MIN     = float(os.getenv("AUTO_MAX_HOLD_MIN",     "12"))
-MAX_POSITIONS    = int(os.getenv("AUTO_MAX_POSITIONS",      "3"))
+EVAL_DELAY_MIN   = float(os.getenv("AUTO_EVAL_DELAY_MIN",   "5"))
+MOMENTUM_BUYS    = int(os.getenv("AUTO_MOMENTUM_BUYS",      "80"))
+STOP_LOSS_PCT    = float(os.getenv("AUTO_STOP_LOSS_PCT",    "-8"))
+TAKE_PROFIT_PCT  = float(os.getenv("AUTO_TAKE_PROFIT_PCT",  "25"))
+TRAILING_PEAK    = float(os.getenv("AUTO_TRAILING_PEAK",    "15"))
+TRAILING_DROP    = float(os.getenv("AUTO_TRAILING_DROP",    "7"))
+MAX_HOLD_MIN     = float(os.getenv("AUTO_MAX_HOLD_MIN",     "7"))
+MAX_POSITIONS    = int(os.getenv("AUTO_MAX_POSITIONS",      "2"))
 MONITOR_INTERVAL = 10  # segundos entre checks de precio
 
 # ── Estado en memoria ────────────────────────────────────────────────────────
@@ -269,11 +269,11 @@ async def _monitor_position(mint: str, symbol: str):
             exit_reason = f"timeout {hold_min:.1f}min"
 
         if exit_reason:
-            _trigger_sell(mint, symbol, current_price, exit_reason, program)
+            await _trigger_sell(mint, symbol, current_price, exit_reason, program)
             break
 
 
-def _trigger_sell(mint: str, symbol: str, current_price_usd: float, reason: str, program: str):
+async def _trigger_sell(mint: str, symbol: str, current_price_usd: float, reason: str, program: str):
     """Envía señal de venta al executor/simulator y limpia la posición."""
     if mint not in _auto_positions:
         return
@@ -303,7 +303,7 @@ def _trigger_sell(mint: str, symbol: str, current_price_usd: float, reason: str,
     }
 
     log.info(f"[auto] 🔴 VENTA {symbol} | motivo: {reason}")
-    execute_copy(sell_swap)
+    await execute_copy(sell_swap)
 
 
 # ── Evaluación de token ───────────────────────────────────────────────────────
@@ -325,6 +325,12 @@ async def _evaluate_token(mint: str):
     ws_buys  = info.get("buys",  0)
     ws_sells = info.get("sells", 0)
     log.info(f"[auto] 🔍 Evaluando {symbol} ({mint[:8]}...) | buys WS: {ws_buys} | sells WS: {ws_sells}")
+
+    # Filtro mínimo de momentum antes de llamar a APIs externas
+    MIN_BUYS = int(os.getenv("AUTO_MIN_BUYS", "50"))
+    if ws_buys < MIN_BUYS:
+        log.debug(f"[auto] ❌ {symbol} — solo {ws_buys} buys (mínimo {MIN_BUYS}) — skip")
+        return
 
     # Intentar DexScreener + PumpPortal API
     token_info = await asyncio.get_event_loop().run_in_executor(None, _fetch_token_info, mint)
@@ -370,6 +376,13 @@ async def _evaluate_token(mint: str):
     token_info["buys_5m"] = max(token_info.get("buys_5m", 0), ws_buys)
     token_info["sells_5m"] = max(token_info.get("sells_5m", 0), ws_sells)
 
+    # Filtro de mcap mínimo — tokens <$5k rara vez tienen precio rastreable en 8min
+    MIN_MCAP = float(os.getenv("AUTO_MIN_MCAP", "5000"))
+    mcap = float(token_info.get("mcap_usd") or 0)
+    if mcap > 0 and mcap < MIN_MCAP:
+        log.debug(f"[auto] ❌ {symbol} — mcap ${mcap:,.0f} < mínimo ${MIN_MCAP:,.0f} — skip")
+        return
+
     elite = is_elite_signal(mint)
     score, passed, reason = score_token(token_info, elite_signal=elite)
     log.info(
@@ -409,7 +422,7 @@ async def _evaluate_token(mint: str):
         "implied_price_sol": token_info.get("price_sol", 0),
     }
 
-    execute_copy(buy_swap)
+    await execute_copy(buy_swap)
 
     # Arrancar monitor de precio en background
     asyncio.create_task(_monitor_position(mint, symbol))

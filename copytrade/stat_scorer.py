@@ -26,7 +26,7 @@ from utils.logger import get_logger
 
 log = get_logger("stat_scorer")
 
-THRESHOLD = int(os.getenv("SCORER_THRESHOLD", "50"))
+THRESHOLD = int(os.getenv("SCORER_THRESHOLD", "65"))
 
 
 def score_token(token_info: dict) -> tuple[int, bool, str]:
@@ -41,8 +41,20 @@ def score_token(token_info: dict) -> tuple[int, bool, str]:
     liq     = float(token_info.get("liquidity_usd") or 0)
     mcap    = float(token_info.get("mcap_usd") or 0)
     ch1h    = token_info.get("price_change_1h")
+    ch5m    = token_info.get("price_change_5m")
     buys    = int(token_info.get("buys_5m") or 0)
+    sells   = int(token_info.get("sells_5m") or 0)
     program = token_info.get("program", "")
+
+    # ── Rechazos duros (zona de pérdida garantizada) ─────────────────────
+    if buys < 50:
+        return (0, False, f"buys_5m={buys} < 50 — WR 36%, rechazado")
+
+    if ch1h is not None and 50 <= ch1h <= 200:
+        return (0, False, f"1h={ch1h:.0f}% — ya bombeó [WR 16%], rechazado")
+
+    if sells > 0 and buys > 0 and sells / buys > 0.6:
+        return (0, False, f"presión vendedora: {sells}S/{buys}B ratio {sells/buys:.1f} — distribución")
 
     # ── Token age ────────────────────────────────────────────────────────
     if age is not None:
@@ -113,9 +125,15 @@ def score_token(token_info: dict) -> tuple[int, bool, str]:
     elif buys >= 50:
         score += 15
         reasons.append(f"+15 buys_5m={buys} [WR 59%]")
-    elif 10 <= buys < 50:
-        score -= 5
-        reasons.append(f"-5 buys_5m={buys} [WR 36% - baja actividad]")
+
+    # ── Price change 5m (momentum reciente) ──────────────────────────────
+    if ch5m is not None:
+        if ch5m > 20:
+            score += 15
+            reasons.append(f"+15 5m={ch5m:.0f}% — momentum activo")
+        elif ch5m < -10:
+            score -= 15
+            reasons.append(f"-15 5m={ch5m:.0f}% — cayendo ahora")
 
     # ── Programa ─────────────────────────────────────────────────────────
     if program == "Raydium":

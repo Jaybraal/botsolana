@@ -75,7 +75,7 @@ def _feature_value(token_info: dict, feature: str):
     return token_info.get(key)
 
 
-def score_token(wallet_label: str, token_info: dict) -> tuple[int, bool, str]:
+def score_token(wallet_label: str, token_info: dict, entry_context: dict | None = None) -> tuple[int, bool, str]:
     """
     Evalúa token_info contra los patrones de wallet_label.
 
@@ -83,12 +83,18 @@ def score_token(wallet_label: str, token_info: dict) -> tuple[int, bool, str]:
         token_age_min, liquidity_usd, mcap_usd, price_change_5m,
         price_change_1h, buys_5m, sells_5m, program
 
+    entry_context: contexto raw de DexScreener (age_days, buy_pressure, etc.)
+                   usado por hold_predictor cuando no hay patrones Groq.
+
     Retorna: (score 0-100, passed, reason)
     """
     _load()
 
     if not _patterns:
-        return (50, True, "scorer desactivado — sin patrones")
+        from copytrade.hold_predictor import predict
+        ctx = entry_context or {}
+        score, passed, reason = predict(wallet_label, ctx)
+        return score, passed, f"[hold_predictor] {reason}"
 
     # Buscar patrón de la wallet — exact, case-insensitive, y limpiando emojis/espacios
     wallet_pattern = _patterns.get(wallet_label)
@@ -163,8 +169,8 @@ def score_token(wallet_label: str, token_info: dict) -> tuple[int, bool, str]:
     return (score, passed, reason)
 
 
-def should_copy(wallet_label: str, token_info: dict) -> tuple[bool, str]:
+def should_copy(wallet_label: str, token_info: dict, entry_context: dict | None = None) -> tuple[bool, str]:
     """Interfaz simplificada: True si debe copiarse."""
-    score, passed, reason = score_token(wallet_label, token_info)
+    score, passed, reason = score_token(wallet_label, token_info, entry_context=entry_context)
     log.info(f"[scorer] {wallet_label} → score={score} {'✅ COPIAR' if passed else '❌ SKIP'} | {reason}")
     return passed, f"score={score} | {reason}"

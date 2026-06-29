@@ -13,6 +13,8 @@ import json
 import math
 import os
 import random
+import signal
+import sys
 import time
 import threading
 from datetime import datetime
@@ -64,6 +66,8 @@ if os.getenv("SIM_RESET", "false").lower() == "true":
 SIM_INITIAL_CAPITAL  = float(os.getenv("SIM_CAPITAL",         "50.0"))
 SIM_MIN_TRADE        = float(os.getenv("SIM_MIN_TRADE",        "0.50"))   # mínimo $0.50 por trade
 SIM_LIQUIDATION      = float(os.getenv("SIM_LIQUIDATION",      "2.0"))    # pausar si balance < $2
+SIM_MIN_CAPITAL      = float(os.getenv("SIM_MIN_CAPITAL",       "1.0"))    # apagar bot si balance <= $1
+SENTINEL_FILE        = "data/CAPITAL_AGOTADO"
 SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004")) # 0.0002 SOL × 2 round-trip
 SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.015"))  # 1.5% por leg — realista para trades <$100 en Pump.fun
 SIM_MAX_HOLD_MIN     = float(os.getenv("SIM_MAX_HOLD_MIN",      "10000"))  # auto-close si la wallet no vende en N minutos (10000 = permite hold indefinido)
@@ -440,7 +444,7 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
                 "buys_5m":        None,
                 "program":        program,
             }
-            passed, reason = should_copy(label, token_info)
+            passed, reason = should_copy(label, token_info, entry_context=entry_context)
             if passed:
                 _scorer_accepted += 1
                 log.info(f"[SIM] 🤖 SCORER ✅ | [cyan]{label}[/] → [yellow]{symbol}[/] | {reason}")
@@ -666,6 +670,29 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str,
 
 # ── Resumen ───────────────────────────────────────────────────────────────────
 
+def _check_capital_minimo():
+    """Detiene el bot si el balance cae al mínimo de capital."""
+    if _sim_balance > SIM_MIN_CAPITAL:
+        return
+
+    msg = (
+        f"[SIM] 🚨 CAPITAL AGOTADO — balance ${_sim_balance:.2f} <= mínimo ${SIM_MIN_CAPITAL:.2f}\n"
+        f"    El bot se detiene para proteger el capital restante."
+    )
+    log.critical(msg)
+
+    # Archivo sentinel — detectable externamente (Railway health check, scripts, etc.)
+    try:
+        os.makedirs("data", exist_ok=True)
+        with open(SENTINEL_FILE, "w") as f:
+            f.write(f"{datetime.now().isoformat()} | balance=${_sim_balance:.2f} | trades={len(_history)}\n")
+    except Exception:
+        pass
+
+    # Parada limpia
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
 def _print_summary():
     if not _history:
         return
@@ -685,6 +712,8 @@ def _print_summary():
         f"${_sim_balance:.2f}[/] | "
         f"ROI: [{'green' if roi_pct >= 0 else 'red'}]{roi_pct:+.1f}%[/]"
     )
+
+    _check_capital_minimo()
 
     # Estadísticas del scorer cada 50 trades
     if _USE_SCORER and len(_history) % 50 == 0:
