@@ -20,9 +20,11 @@ from utils.logger import get_logger, console
 
 log = get_logger("learner")
 
-HISTORY_FILE = "data/sim_history.json"
-RULES_FILE   = "data/learner_rules.json"
-MIN_TRADES   = 5  # mínimo de trades cerrados antes de generar reglas útiles
+HISTORY_FILE    = "data/sim_history.json"
+RULES_FILE      = "data/learner_rules.json"
+RULES_CW_FILE   = "data/learner_rules_copywallet.json"
+RULES_AUTO_FILE = "data/learner_rules_auto.json"
+MIN_TRADES      = 5  # mínimo de trades cerrados antes de generar reglas útiles
 
 
 # ── Persistencia ──────────────────────────────────────────────────────────────
@@ -37,11 +39,17 @@ def _load_history() -> list:
         return []
 
 
-def load_rules() -> dict:
-    if not os.path.exists(RULES_FILE):
+def load_rules(source: str = "ALL") -> dict:
+    if source == "CW":
+        path = RULES_CW_FILE
+    elif source == "AUTO":
+        path = RULES_AUTO_FILE
+    else:
+        path = RULES_FILE
+    if not os.path.exists(path):
         return {}
     try:
-        with open(RULES_FILE) as f:
+        with open(path) as f:
             return json.load(f)
     except Exception:
         return {}
@@ -77,28 +85,14 @@ def _win_rate_by(trades: list, field: str, from_context: bool = False) -> dict:
 
 # ── Motor de aprendizaje ──────────────────────────────────────────────────────
 
-def update() -> dict | None:
-    """
-    Lee el historial, calcula patrones y persiste learner_rules.json.
-    Llamar automáticamente después de cada trade cerrado.
-    Retorna None si aún no hay suficientes datos.
-    """
-    history  = _load_history()
-    with_ctx = [t for t in history if t.get("entry_context")]
-
+def _build_rules_for(trades: list) -> dict | None:
+    """Construye el dict de reglas para una lista de trades con entry_context."""
+    with_ctx = [t for t in trades if t.get("entry_context")]
     if len(with_ctx) < MIN_TRADES:
-        remaining = MIN_TRADES - len(with_ctx)
-        log.info(
-            f"[LEARNER] {len(with_ctx)}/{MIN_TRADES} trades con contexto — "
-            f"faltan {remaining} para generar reglas"
-        )
         return None
-
     winners = [t for t in with_ctx if t.get("won")]
     losers  = [t for t in with_ctx if not t.get("won")]
-
     if not winners:
-        log.info("[LEARNER] Aún no hay trades ganadores para aprender.")
         return None
 
     ctx_keys = (
@@ -109,19 +103,18 @@ def update() -> dict | None:
     winner_avg = {k: _avg(winners, k) for k in ctx_keys}
     loser_avg  = {k: _avg(losers,  k) for k in ctx_keys}
 
-    # Thresholds derivados: zona de confort de los ganadores con margen de seguridad
     wa = winner_avg
     scoring_rules: dict = {}
-    if wa["mcap_usd"]       is not None: scoring_rules["min_mcap_usd"]        = max(5000, round(wa["mcap_usd"] * 0.5, 0))  # mín $5K
+    if wa["mcap_usd"]       is not None: scoring_rules["min_mcap_usd"]        = max(5000, round(wa["mcap_usd"] * 0.5, 0))
     if wa["mcap_usd"]       is not None: scoring_rules["max_mcap_usd"]        = round(wa["mcap_usd"] * 1.5, 0)
     if wa["liquidity_usd"]  is not None: scoring_rules["min_liquidity_usd"]   = round(wa["liquidity_usd"]  * 0.5, 0)
     if wa["volume_24h_usd"] is not None: scoring_rules["min_volume_24h_usd"]  = round(wa["volume_24h_usd"] * 0.5, 0)
     if wa["buy_pressure"]   is not None: scoring_rules["min_buy_pressure"]    = round(wa["buy_pressure"]   * 0.85, 3)
     if wa["change_1h_pct"]  is not None: scoring_rules["min_change_1h_pct"]   = round(wa["change_1h_pct"]  * 0.5, 2)
-    if wa["age_minutes"]    is not None: scoring_rules["min_age_minutes"]     = max(5, round(wa["age_minutes"] * 0.8, 0))  # mín 5 min
+    if wa["age_minutes"]    is not None: scoring_rules["min_age_minutes"]     = max(5, round(wa["age_minutes"] * 0.8, 0))
     if wa["age_days"]       is not None: scoring_rules["max_age_days"]        = round(wa["age_days"]       * 2.0, 1)
 
-    rules = {
+    return {
         "total_trades":       len(with_ctx),
         "winners":            len(winners),
         "losers":             len(losers),
@@ -133,13 +126,55 @@ def update() -> dict | None:
         "scoring_rules":      scoring_rules,
     }
 
-    _save_rules(rules)
-    log.info(
-        f"[bold cyan][LEARNER][/] Reglas actualizadas — "
-        f"{len(with_ctx)} trades | "
-        f"Win rate: [{'green' if rules['win_rate'] >= 50 else 'red'}]{rules['win_rate']}%[/] | "
-        f"{len(scoring_rules)} reglas activas"
-    )
+
+def update() -> dict | None:
+    """
+    Lee el historial, calcula patrones por fuente y persiste los tres archivos de reglas.
+    Retorna las reglas globales (todos los trades), o None si no hay suficientes datos.
+    """
+    history = _load_history()
+
+    # Reglas globales (comportamiento original — no rompe nada existente)
+    rules = _build_rules_for(history)
+    if rules:
+        _save_rules(rules)
+        log.info(
+            f"[bold cyan][LEARNER][/] Reglas actualizadas — "
+            f"{rules['total_trades']} trades | "
+            f"Win rate: [{'green' if rules['win_rate'] >= 50 else 'red'}]{rules['win_rate']}%[/] | "
+            f"{len(rules.get('scoring_rules', {}))} reglas activas"
+        )
+    else:
+        with_ctx = [t for t in history if t.get("entry_context")]
+        remaining = MIN_TRADES - len(with_ctx)
+        if remaining > 0:
+            log.info(
+                f"[LEARNER] {len(with_ctx)}/{MIN_TRADES} trades con contexto — "
+                f"faltan {remaining} para generar reglas"
+            )
+
+    # Reglas por fuente
+    cw_trades   = [t for t in history if not t.get("wallet_label", "").startswith("AUTO")]
+    auto_trades = [t for t in history if t.get("wallet_label", "").startswith("AUTO")]
+
+    cw_rules = _build_rules_for(cw_trades)
+    if cw_rules:
+        with open(RULES_CW_FILE, "w") as f:
+            json.dump(cw_rules, f, indent=2)
+    elif cw_trades:
+        # Hay trades CW pero no suficientes — guardar parcial para referencia
+        with open(RULES_CW_FILE, "w") as f:
+            json.dump({"total_trades": len(cw_trades), "win_rate": 0, "scoring_rules": {}}, f, indent=2)
+
+    auto_rules = _build_rules_for(auto_trades)
+    if auto_rules:
+        with open(RULES_AUTO_FILE, "w") as f:
+            json.dump(auto_rules, f, indent=2)
+    elif auto_trades:
+        # Hay trades AUTO pero no suficientes — guardar parcial para referencia
+        with open(RULES_AUTO_FILE, "w") as f:
+            json.dump({"total_trades": len(auto_trades), "win_rate": 0, "scoring_rules": {}}, f, indent=2)
+
     return rules
 
 
