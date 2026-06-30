@@ -465,6 +465,11 @@ async def watch_all():
         log.info("[watcher] 🤖 Modo autónomo activado — scanner sin copy wallets")
         tasks.append(watch_autonomous())
 
+    # Learner Scanner DexScreener (activo si LEARNER_SCANNER_ENABLED=true)
+    if os.getenv("LEARNER_SCANNER_ENABLED", "true").lower() == "true":
+        from copytrade.learner_scanner import watch_learner_scanner
+        tasks.append(watch_learner_scanner())
+
     if not tasks:
         log.error("Sin modo activo. Configura TARGET_WALLETS o pon AUTONOMOUS_MODE=true.")
         return

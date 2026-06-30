@@ -353,3 +353,164 @@ async def _open_position(mint: str, token_info: dict, reason: str):
     log.info(f"[learner] 🟢 COMPRA {symbol} | {reason}")
     await execute_copy(buy_swap)
     asyncio.create_task(_monitor_position(mint, symbol))
+
+
+# ── Descubrimiento ────────────────────────────────────────────────────────────
+
+def _pair_to_token_info(pair: dict, mint: str) -> dict:
+    """Convierte un pair de DexScreener al formato token_info usado por los scorers."""
+    liq    = float((pair.get("liquidity") or {}).get("usd") or 0)
+    mcap   = float(pair.get("marketCap") or pair.get("fdv") or 0)
+    pc     = pair.get("priceChange") or {}
+    txns_h1 = (pair.get("txns") or {}).get("h1") or {}
+    vol_h24 = float((pair.get("volume") or {}).get("h24") or 0)
+    buys_h1  = int(txns_h1.get("buys") or 0)
+    sells_h1 = int(txns_h1.get("sells") or 0)
+    total_h1 = buys_h1 + sells_h1
+    buy_pressure = buys_h1 / total_h1 if total_h1 > 0 else 0.0
+
+    txns_5m = (pair.get("txns") or {}).get("m5") or {}
+    buys_5m  = int(txns_5m.get("buys") or 0)
+    sells_5m = int(txns_5m.get("sells") or 0)
+
+    created_ms = pair.get("pairCreatedAt") or 0
+    created_s  = created_ms // 1000 if created_ms > 1e10 else created_ms
+    age_days   = round((time.time() - created_s) / 86400, 2) if created_s else None
+    age_min    = round((time.time() - created_s) / 60, 1)   if created_s else None
+
+    dex = (pair.get("dexId") or "").lower()
+    if "raydium" in dex:
+        program = "Raydium"
+    elif "pumpswap" in dex or "pump_amm" in dex:
+        program = "PumpSwap"
+    else:
+        program = "Pump.fun"
+
+    vol_liq_ratio = vol_h24 / liq if liq > 0 else 0.0
+
+    base_token = pair.get("baseToken") or {}
+    return {
+        "mint":            mint,
+        "symbol":          base_token.get("symbol", mint[:6]),
+        "price_usd":       float(pair.get("priceUsd") or 0),
+        "price_sol":       float(pair.get("priceNative") or 0),
+        "liquidity_usd":   liq,
+        "mcap_usd":        mcap,
+        "price_change_1h": float(pc.get("h1") or 0),
+        "price_change_5m": float(pc.get("m5") or 0),
+        "buys_5m":         buys_5m,
+        "sells_5m":        sells_5m,
+        "token_age_min":   age_min,
+        "age_days":        age_days,
+        "buy_pressure":    buy_pressure,
+        "vol_liq_ratio":   vol_liq_ratio,
+        "volume_24h_usd":  vol_h24,
+        "program":         program,
+        "pair_address":    pair.get("pairAddress", ""),
+        "discovery_source": "dexscreener",
+    }
+
+
+def _fetch_candidates() -> list[dict]:
+    """
+    Obtiene candidatos de DexScreener:
+      1. get_trending_solana() → lista de mints boosteados
+      2. get_tokens_batch() → datos completos por mint
+      3. Convierte cada par a token_info
+    Retorna lista de token_info listos para _score_and_decide().
+    """
+    try:
+        trending = get_trending_solana()
+        if not trending:
+            log.debug("[learner] DexScreener trending vacío — sin candidatos")
+            return []
+
+        mints = [t["tokenAddress"] for t in trending if t.get("tokenAddress")]
+        if not mints:
+            return []
+
+        batch = get_tokens_batch(mints)
+        candidates = []
+
+        for mint, pairs in batch.items():
+            if not pairs:
+                continue
+            # Tomar el par con mayor liquidez
+            best = max(pairs, key=lambda p: float((p.get("liquidity") or {}).get("usd") or 0))
+            token_info = _pair_to_token_info(best, mint)
+            candidates.append(token_info)
+
+        return candidates
+
+    except Exception as e:
+        log.warning(f"[learner] Error en _fetch_candidates: {e}")
+        return []
+
+
+# ── Loop principal ────────────────────────────────────────────────────────────
+
+async def scan_loop():
+    """Loop periódico — descubre, filtra, compra. Corre cada SCAN_INTERVAL segundos."""
+    consec_failures = 0
+
+    while True:
+        try:
+            candidates = await asyncio.get_event_loop().run_in_executor(None, _fetch_candidates)
+            evaluated  = 0
+            opened     = 0
+
+            for token_info in candidates:
+                mint   = token_info.get("mint", "")
+                symbol = token_info.get("symbol", "?")
+
+                if not mint or mint in _auto_positions:
+                    continue
+
+                evaluated += 1
+                passed, reason = _score_and_decide(token_info)
+
+                if passed:
+                    log.info(f"[learner] ✅ CANDIDATO {symbol} | {reason}")
+                    await _open_position(mint, token_info, reason)
+                    opened += 1
+                else:
+                    log.debug(f"[learner] ❌ {symbol} | {reason}")
+
+            if evaluated > 0 or opened > 0:
+                log.info(
+                    f"[learner] 🔍 Ciclo completado | {evaluated} evaluados | "
+                    f"{opened} abiertos | {len(_auto_positions)} posiciones activas"
+                )
+
+            consec_failures = 0
+
+        except Exception as e:
+            consec_failures += 1
+            log.error(f"[learner] Error en scan_loop (fallo #{consec_failures}): {e}")
+
+        await asyncio.sleep(SCAN_INTERVAL)
+
+
+async def watch_learner_scanner():
+    """
+    Entry point para main.py — recupera huérfanas y arranca el loop.
+    Añadir a asyncio.gather() en main.py.
+    """
+    if not ENABLED:
+        log.info("[learner] Scanner desactivado (LEARNER_SCANNER_ENABLED=false)")
+        return
+
+    _recover_orphan_positions()
+
+    for mint, pos in list(_auto_positions.items()):
+        asyncio.create_task(_monitor_position(mint, pos["symbol"]))
+
+    log.info(
+        f"[learner] 🤖 Learner Scanner iniciado | "
+        f"ciclo {SCAN_INTERVAL/60:.0f}min | "
+        f"score_thresh {SCORE_THRESH} | "
+        f"criteria {CRITERIA_MATCH}/6 | "
+        f"max {MAX_POSITIONS} posiciones"
+    )
+
+    await scan_loop()
