@@ -198,6 +198,27 @@ LIVE TRADING (meta)
 
 ---
 
+## Learner Scanner (modo autónomo)
+
+| Variable | Default | Descripción |
+|---|---|---|
+| `LEARNER_SCANNER_ENABLED` | `true` | Activar/desactivar el nuevo scanner |
+| `LEARNER_SCAN_INTERVAL_MIN` | `5` | Minutos entre scans DexScreener |
+| `LEARNER_SCORE_THRESHOLD` | `55` | Score mínimo stat_scorer para abrir posición |
+| `LEARNER_CRITERIA_MATCH` | `5` | Criterios de learner_rules que deben coincidir (de 6) |
+| `MAX_AUTO_POSITIONS` | `2` | Máximo posiciones autónomas simultáneas |
+| `AUTO_MOMENTUM_BUYS` | `99999` | Deshabilita el scanner viejo de PumpPortal |
+
+### Criterio de graduación (hacia operar sin copywallet)
+- ≥ 100 trades AUTO cerrados
+- WR ≥ 50%
+- Profit factor ≥ 1.2
+
+Monitorear con:
+`grep "AUTO.*WIN\|AUTO.*LOSS\|RESUMEN" logs/simulator_*.log`
+
+---
+
 ## Próximas acciones (plan)
 
 ```
