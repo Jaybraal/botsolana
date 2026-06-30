@@ -153,3 +153,203 @@ def _score_and_decide(token_info: dict) -> tuple[bool, str]:
         return False, f"learner_criteria FAIL | {crit_reason}"
 
     return True, f"stat={score} | {stat_reason} | criteria: {crit_reason}"
+
+
+# ── Precio PumpPortal ─────────────────────────────────────────────────────────
+
+def _fetch_pumpportal_price(mint: str) -> dict | None:
+    """Precio desde bonding curve de PumpPortal — fallback cuando DexScreener no tiene el token."""
+    try:
+        r = httpx.get(PUMPPORTAL_API, params={"mint": mint}, timeout=3)
+        if r.status_code != 200:
+            return None
+        d = r.json()
+        v_sol = float(d.get("virtual_sol_reserves") or 0)
+        v_tok = float(d.get("virtual_token_reserves") or 0)
+        if v_sol <= 0 or v_tok <= 0:
+            return None
+        price_sol = (v_sol / 1e9) / (v_tok / 1e6)
+        price_usd = price_sol * _get_sol_price()
+        return {"price_usd": price_usd, "price_sol": price_sol}
+    except Exception:
+        return None
+
+
+def _fetch_current_price(mint: str, pair_address: str = "") -> float:
+    """Precio actual — DexScreener pair → PumpPortal fallback → 0."""
+    from utils.dexscreener import get_pair_price
+    if pair_address:
+        price = get_pair_price(pair_address)
+        if price and price > 0:
+            return price
+    pp = _fetch_pumpportal_price(mint)
+    return (pp or {}).get("price_usd", 0)
+
+
+# ── Posiciones ────────────────────────────────────────────────────────────────
+
+_SIM_POSITIONS_PATH = "data/sim_positions.json"
+
+
+def _recover_orphan_positions() -> None:
+    """Recupera posiciones de AUTO 🤖 desde sim_positions.json tras un restart."""
+    if not os.path.exists(_SIM_POSITIONS_PATH):
+        return
+    try:
+        with open(_SIM_POSITIONS_PATH) as f:
+            all_pos = json.load(f)
+        recovered = 0
+        for mint, pos in all_pos.items():
+            if not pos or pos.get("wallet") != "AUTONOMOUS_BOT":
+                continue
+            if mint in _auto_positions:
+                continue
+            entry_price = pos.get("entry_price", 0)
+            if not entry_price:
+                continue
+            _auto_positions[mint] = {
+                "entry_price_usd": entry_price,
+                "last_price_usd":  entry_price,
+                "entry_time":      pos.get("opened_at", time.time()),
+                "peak_pct":        0.0,
+                "symbol":          pos.get("symbol", mint[:6]),
+                "program":         (pos.get("entry_context") or {}).get("dex_id", "PumpSwap"),
+                "pair_address":    pos.get("pair_address", ""),
+            }
+            recovered += 1
+        if recovered:
+            log.info(f"[learner] ♻️  {recovered} posiciones huérfanas recuperadas")
+    except Exception as e:
+        log.warning(f"[learner] No se pudieron recuperar posiciones huérfanas: {e}")
+
+
+async def _trigger_sell(mint: str, symbol: str, current_price: float, reason: str, program: str):
+    """Envía señal de venta al executor/simulator y limpia la posición."""
+    if mint not in _auto_positions:
+        return
+    if current_price <= 0:
+        current_price = _auto_positions[mint].get("last_price_usd", 0)
+    _auto_positions.pop(mint, None)
+
+    sol_price = _get_sol_price()
+    price_sol = (current_price / sol_price) if current_price > 0 and sol_price > 0 else 0.0
+
+    sell_swap = {
+        "wallet":            "AUTONOMOUS_BOT",
+        "wallet_label":      "AUTO 🤖",
+        "program":           program,
+        "token_in":          mint,
+        "token_out":         SOL_MINT,
+        "symbol_in":         symbol,
+        "symbol_out":        "SOL",
+        "amount_in":         0,
+        "amount_out":        0,
+        "wallet_pre_sol":    0,
+        "implied_price_sol": price_sol,
+    }
+    log.info(f"[learner] 🔴 VENTA {symbol} | motivo: {reason}")
+    await execute_copy(sell_swap)
+
+
+async def _monitor_position(mint: str, symbol: str):
+    """Monitorea precio cada MONITOR_TICK segundos. Aplica SL/TP/trailing/timeout."""
+    pos = _auto_positions.get(mint)
+    if not pos:
+        return
+
+    entry_price  = pos["entry_price_usd"]
+    entry_time   = pos["entry_time"]
+    program      = pos["program"]
+    pair_address = pos.get("pair_address", "")
+
+    log.info(
+        f"[learner] 👁 Monitor {symbol} | entrada ${entry_price:.8f} | "
+        f"SL {STOP_LOSS_PCT:+.0f}% | TP +{TAKE_PROFIT:.0f}% | "
+        f"trailing >{TRAIL_PEAK:.0f}% cae -{TRAIL_DROP:.0f}% | max {MAX_HOLD_MIN:.0f}min"
+    )
+
+    while mint in _auto_positions:
+        await asyncio.sleep(MONITOR_TICK)
+        if mint not in _auto_positions:
+            break
+
+        current = await asyncio.get_event_loop().run_in_executor(
+            None, _fetch_current_price, mint, pair_address
+        )
+
+        if current <= 0:
+            current = _auto_positions[mint].get("last_price_usd", 0)
+        else:
+            _auto_positions[mint]["last_price_usd"] = current
+
+        hold_min = (time.time() - entry_time) / 60
+
+        if current <= 0 or entry_price <= 0:
+            if hold_min >= MAX_HOLD_MIN:
+                await _trigger_sell(mint, symbol, 0.0, f"timeout-sin-precio {hold_min:.1f}min", program)
+            continue
+
+        pnl_pct  = (current - entry_price) / entry_price * 100
+        peak_pct = _auto_positions[mint].get("peak_pct", 0)
+
+        if pnl_pct > peak_pct:
+            _auto_positions[mint]["peak_pct"] = pnl_pct
+            peak_pct = pnl_pct
+
+        log.info(f"[learner] 📊 {symbol} | P&L {pnl_pct:+.1f}% | pico {peak_pct:+.1f}% | hold {hold_min:.1f}min")
+
+        exit_reason = None
+        if pnl_pct <= STOP_LOSS_PCT:
+            exit_reason = f"stop-loss {pnl_pct:+.1f}%"
+        elif pnl_pct >= TAKE_PROFIT:
+            exit_reason = f"take-profit {pnl_pct:+.1f}%"
+        elif peak_pct >= TRAIL_PEAK and (peak_pct - pnl_pct) >= TRAIL_DROP:
+            exit_reason = f"trailing pico={peak_pct:+.1f}% actual={pnl_pct:+.1f}%"
+        elif hold_min >= MAX_HOLD_MIN:
+            exit_reason = f"timeout {hold_min:.1f}min"
+
+        if exit_reason:
+            await _trigger_sell(mint, symbol, current, exit_reason, program)
+            break
+
+
+async def _open_position(mint: str, token_info: dict, reason: str):
+    """Registra posición y ejecuta compra via executor/simulator."""
+    if len(_auto_positions) >= MAX_POSITIONS:
+        log.debug(f"[learner] Límite {MAX_POSITIONS} posiciones — skip {mint[:8]}")
+        return
+    if mint in _auto_positions:
+        return
+
+    entry_price = token_info.get("price_usd", 0)
+    symbol      = token_info.get("symbol", mint[:6])
+    program     = token_info.get("program", "PumpSwap")
+    sol_price   = _get_sol_price()
+
+    _auto_positions[mint] = {
+        "entry_price_usd": entry_price,
+        "last_price_usd":  entry_price,
+        "entry_time":      time.time(),
+        "peak_pct":        0.0,
+        "symbol":          symbol,
+        "program":         program,
+        "pair_address":    token_info.get("pair_address", ""),
+    }
+
+    buy_swap = {
+        "wallet":            "AUTONOMOUS_BOT",
+        "wallet_label":      "AUTO 🤖",
+        "program":           program,
+        "token_in":          SOL_MINT,
+        "token_out":         mint,
+        "symbol_in":         "SOL",
+        "symbol_out":        symbol,
+        "amount_in":         0,
+        "amount_out":        0,
+        "wallet_pre_sol":    0,
+        "implied_price_sol": entry_price / sol_price if sol_price > 0 else 0,
+    }
+
+    log.info(f"[learner] 🟢 COMPRA {symbol} | {reason}")
+    await execute_copy(buy_swap)
+    asyncio.create_task(_monitor_position(mint, symbol))

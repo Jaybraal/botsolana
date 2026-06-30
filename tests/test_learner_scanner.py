@@ -100,3 +100,53 @@ def test_score_and_decide_rejects_zero_price():
     passed, reason = _score_and_decide(token)
     assert not passed
     assert "precio" in reason.lower() or "price" in reason.lower()
+
+
+# ── monitor exit conditions ──────────────────────────────────────────────────
+
+def test_stop_loss_threshold():
+    """SL se activa a -8% (valor por defecto)."""
+    from copytrade.learner_scanner import STOP_LOSS_PCT
+    assert STOP_LOSS_PCT == -8.0
+
+
+def test_take_profit_threshold():
+    """TP se activa a +25% (valor por defecto)."""
+    from copytrade.learner_scanner import TAKE_PROFIT
+    assert TAKE_PROFIT == 25.0
+
+
+def test_recover_orphans_no_crash_on_missing_file(tmp_path, monkeypatch):
+    """_recover_orphan_positions no crashea si sim_positions.json no existe."""
+    import copytrade.learner_scanner as LS
+    monkeypatch.setattr(LS, "_SIM_POSITIONS_PATH", str(tmp_path / "nonexistent.json"))
+    LS._recover_orphan_positions()  # no debe lanzar
+
+
+def test_recover_orphans_loads_auto_positions(tmp_path, monkeypatch):
+    """_recover_orphan_positions carga posiciones de AUTO 🤖 del archivo."""
+    import json
+    import copytrade.learner_scanner as LS
+
+    positions_file = tmp_path / "sim_positions.json"
+    positions_file.write_text(json.dumps({
+        "mint_abc": {
+            "wallet":       "AUTONOMOUS_BOT",
+            "entry_price":  0.00005,
+            "opened_at":    1000000.0,
+            "symbol":       "TEST",
+        },
+        "mint_xyz": {
+            "wallet":       "Decu",       # NO es AUTO — no debe recuperarse
+            "entry_price":  0.0001,
+            "opened_at":    1000000.0,
+            "symbol":       "OTHER",
+        },
+    }))
+
+    monkeypatch.setattr(LS, "_SIM_POSITIONS_PATH", str(positions_file))
+    LS._auto_positions.clear()
+    LS._recover_orphan_positions()
+
+    assert "mint_abc" in LS._auto_positions
+    assert "mint_xyz" not in LS._auto_positions
