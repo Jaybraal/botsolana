@@ -142,8 +142,8 @@ def _score_and_decide(token_info: dict) -> tuple[bool, str]:
         return False, "precio USD = 0 — descartado"
 
     # Primera capa: stat_scorer
-    score, stat_passed, stat_reason = stat_score(token_info)
-    if not stat_passed:
+    score, _stat_passed, stat_reason = stat_score(token_info)
+    if score < SCORE_THRESH:
         return False, f"stat_scorer score={score} < {SCORE_THRESH} | {stat_reason}"
 
     # Segunda capa: learner_rules_copywallet
