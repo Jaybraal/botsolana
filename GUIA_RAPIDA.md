@@ -356,6 +356,31 @@ d769fe7 — Circuit breaker 20% loss
 
 ---
 
+## Learner Scanner (modo autónomo sin copywallet)
+
+El bot incluye un scanner que aprende de los patrones de las wallets élite y encuentra tokens por sí mismo, sin necesitar seguir a nadie.
+
+| Variable | Default | Descripción |
+|---|---|---|
+| `LEARNER_SCANNER_ENABLED` | `true` | Activar/desactivar el nuevo scanner |
+| `LEARNER_SCAN_INTERVAL_MIN` | `5` | Minutos entre scans DexScreener |
+| `LEARNER_SCORE_THRESHOLD` | `55` | Score mínimo stat_scorer para abrir posición |
+| `LEARNER_CRITERIA_MATCH` | `5` | Criterios de learner_rules que deben coincidir (de 6) |
+| `MAX_AUTO_POSITIONS` | `2` | Máximo posiciones autónomas simultáneas |
+| `AUTO_MOMENTUM_BUYS` | `99999` | Deshabilita el autonomous_scanner viejo (PumpPortal) |
+
+### Criterio de graduación (operar sin copywallet)
+- ≥ 100 trades AUTO cerrados
+- WR ≥ 50%
+- Profit factor ≥ 1.2
+
+Monitorear progreso:
+```bash
+grep "AUTO.*WIN\|AUTO.*LOSS\|RESUMEN" logs/simulator_*.log
+```
+
+---
+
 ## Próximo paso
 
 **Monitorea por 2 semanas**, luego avisame cuando esté listo para LIVE.
