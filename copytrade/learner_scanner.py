@@ -455,7 +455,7 @@ async def scan_loop():
 
     while True:
         try:
-            candidates = await asyncio.get_event_loop().run_in_executor(None, _fetch_candidates)
+            candidates = await asyncio.get_running_loop().run_in_executor(None, _fetch_candidates)
             evaluated  = 0
             opened     = 0
 
