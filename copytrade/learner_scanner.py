@@ -273,7 +273,7 @@ async def _monitor_position(mint: str, symbol: str):
         if mint not in _auto_positions:
             break
 
-        current = await asyncio.get_event_loop().run_in_executor(
+        current = await asyncio.get_running_loop().run_in_executor(
             None, _fetch_current_price, mint, pair_address
         )
 
