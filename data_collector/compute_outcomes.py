@@ -53,6 +53,7 @@ def get_signatures(wallet: str) -> list[str]:
     """Devuelve hasta SIGS_LIMIT firmas recientes (más nuevo primero)."""
     sigs = []
     before = None
+    empty_batches = 0
     while len(sigs) < SIGS_LIMIT:
         params: list = [wallet, {"limit": 1000, "commitment": "confirmed"}]
         if before:
@@ -62,6 +63,12 @@ def get_signatures(wallet: str) -> list[str]:
             break
         batch = [item["signature"] for item in result if not item.get("err")]
         sigs.extend(batch)
+        if not batch:
+            empty_batches += 1
+            if empty_batches >= 3:
+                break
+        else:
+            empty_batches = 0
         if len(result) < 1000:
             break
         before = result[-1]["signature"]

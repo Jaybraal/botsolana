@@ -49,6 +49,46 @@ else:
     def _clear_mint(mint: str) -> None:
         pass
 
+# ── Filtros universales del análisis Groq (_combined) ────────────────────────
+def _load_combined_filters() -> dict:
+    try:
+        import json as _json
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "groq_patterns.json")
+        patterns = _json.load(open(path))
+        return patterns.get("_combined", {}).get("universal_filters", {})
+    except Exception:
+        return {}
+
+_COMBINED_FILTERS: dict = _load_combined_filters()
+
+
+def _passes_combined_filters(token_info: dict, symbol: str) -> tuple[bool, str]:
+    """Pre-filtro con reglas universales del análisis Groq combinado."""
+    if not _COMBINED_FILTERS:
+        return True, ""
+    age  = token_info.get("token_age_min")
+    liq  = float(token_info.get("liquidity_usd") or 0)
+    buys = int(token_info.get("buys_5m") or 0)
+    prog = token_info.get("program", "")
+
+    max_age = _COMBINED_FILTERS.get("max_token_age_min")
+    if max_age and age is not None and age > max_age:
+        return False, f"edad {age:.1f}min > máx {max_age}min [Groq combined]"
+
+    min_liq = _COMBINED_FILTERS.get("min_liquidity_usd", 0)
+    if min_liq and liq > 0 and liq < min_liq:
+        return False, f"liq ${liq:.0f} < mín ${min_liq} [Groq combined]"
+
+    min_buys = _COMBINED_FILTERS.get("min_buys_5m", 0)
+    if min_buys and buys < min_buys:
+        return False, f"buys {buys} < mín {min_buys} [Groq combined]"
+
+    preferred = _COMBINED_FILTERS.get("preferred_programs", [])
+    if preferred and prog and prog not in preferred:
+        pass  # no rechazar, solo informativo — el scorer ya penaliza
+
+    return True, ""
+
 from utils.dexscreener import get_best_pair
 from utils.logger import get_logger
 
@@ -383,6 +423,12 @@ async def _evaluate_token(mint: str):
         log.debug(f"[auto] ❌ {symbol} — mcap ${mcap:,.0f} < mínimo ${MIN_MCAP:,.0f} — skip")
         return
 
+    # Pre-filtro Groq combined
+    ok, reject_reason = _passes_combined_filters(token_info, symbol)
+    if not ok:
+        log.debug(f"[auto] ❌ {symbol} — {reject_reason}")
+        return
+
     elite = is_elite_signal(mint)
     score, passed, reason = score_token(token_info, elite_signal=elite)
     log.info(
@@ -513,11 +559,48 @@ async def _handle_token_trade(data: dict):
 
 # ── Loop principal ────────────────────────────────────────────────────────────
 
+def _recover_orphan_positions() -> None:
+    """Carga posiciones huérfanas de AUTONOMOUS_BOT desde sim_positions.json."""
+    try:
+        import json as _json
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "sim_positions.json")
+        with open(path) as f:
+            all_pos = _json.load(f)
+        recovered = 0
+        for mint, pos in all_pos.items():
+            if not pos or pos.get("wallet") != "AUTONOMOUS_BOT":
+                continue
+            if mint in _auto_positions:
+                continue
+            entry_price = pos.get("entry_price", 0)
+            if not entry_price:
+                continue
+            _auto_positions[mint] = {
+                "entry_price_usd": entry_price,
+                "last_price_usd":  entry_price,
+                "entry_time":      pos.get("opened_at", time.time()),
+                "peak_pct":        0.0,
+                "symbol":          pos.get("symbol", mint[:6]),
+                "program":         (pos.get("entry_context") or {}).get("dex_id", "Pump.fun"),
+            }
+            recovered += 1
+        if recovered:
+            log.info(f"[auto] ♻️  {recovered} posiciones huérfanas recuperadas de sim_positions.json")
+    except Exception as e:
+        log.warning(f"[auto] No se pudieron recuperar posiciones huérfanas: {e}")
+
+
 async def watch_autonomous():
     """
     Loop autónomo: suscribe a PumpPortal para todos los tokens nuevos.
     Se integra en watch_all() via asyncio.gather.
     """
+    _recover_orphan_positions()
+
+    # Lanzar monitor para cada posición recuperada
+    for mint, pos in list(_auto_positions.items()):
+        asyncio.create_task(_monitor_position(mint, pos["symbol"]))
+
     log.info("[auto] 🤖 Scanner autónomo iniciado")
     log.info(
         f"[auto] Config: eval en {EVAL_DELAY_MIN}min | "

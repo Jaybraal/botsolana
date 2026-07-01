@@ -70,7 +70,7 @@ SIM_MIN_CAPITAL      = float(os.getenv("SIM_MIN_CAPITAL",       "1.0"))    # apa
 SENTINEL_FILE        = "data/CAPITAL_AGOTADO"
 SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004")) # 0.0002 SOL × 2 round-trip
 SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.015"))  # 1.5% por leg — realista para trades <$100 en Pump.fun
-SIM_MAX_HOLD_MIN     = float(os.getenv("SIM_MAX_HOLD_MIN",      "10000"))  # auto-close si la wallet no vende en N minutos (10000 = permite hold indefinido)
+SIM_MAX_HOLD_MIN     = float(os.getenv("SIM_MAX_HOLD_MIN",      "30"))    # auto-close si la wallet no vende en N minutos (realista para pump.fun: 30min máx)
 SIM_MAX_CONFIRMATIONS = int(os.getenv("SIM_MAX_CONFIRMATIONS",  "3"))      # max wallets que pueden escalar la misma posición
 
 # Realismo brutal — 5 mejoras cuantitativas
@@ -80,6 +80,11 @@ SIM_MARKET_IMPACT           = os.getenv("SIM_MARKET_IMPACT", "true").lower() == 
 SIM_SMART_FAIL_RATE         = os.getenv("SIM_SMART_FAIL_RATE", "true").lower() == "true"
 SIM_BASE_FAIL_RATE          = float(os.getenv("SIM_BASE_FAIL_RATE", "0.08"))  # 8% baseline
 SIM_EXTENDED_METRICS        = os.getenv("SIM_EXTENDED_METRICS", "true").lower() == "true"
+# Cap de fricción combinada en salida (slippage_exit + market_impact).
+# Si supera este límite la TX fallaría en real → se escala proporcionalmente.
+SIM_MAX_EXIT_FRICTION       = float(os.getenv("SIM_MAX_EXIT_FRICTION", "0.20"))  # 20%
+# Cooldown tras cerrar una posición — evita re-entrar al mismo token antes de N minutos.
+SIM_REENTRY_COOLDOWN_MIN    = float(os.getenv("SIM_REENTRY_COOLDOWN_MIN", "5.0"))  # 5 min
 
 # Tiers de tamaño por trade según balance — escala progresivamente conforme crece el capital.
 # (balance_mínimo, tope_usd_por_trade)
@@ -154,9 +159,10 @@ def _save_balance():
 
 # ── Estado en memoria ─────────────────────────────────────────────────────────
 
-_positions:   dict[str, dict] = _load_positions()  # {token_mint: position}
-_history:     list[dict]                 = _load_history()
-_sim_balance: float                      = _load_balance()
+_positions:       dict[str, dict]  = _load_positions()  # {token_mint: position}
+_history:         list[dict]       = _load_history()
+_sim_balance:     float            = _load_balance()
+_recently_closed: dict[str, float] = {}  # {token_mint: timestamp_close} — cooldown re-entradas
 _lock = threading.Lock()  # protege _positions contra race conditions
 
 # Contadores del scorer — cuántos trades filtra vs deja pasar
@@ -366,6 +372,17 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
         if existing:
             return
 
+        # Cooldown: no re-entrar al mismo token antes de SIM_REENTRY_COOLDOWN_MIN
+        cooldown_s = SIM_REENTRY_COOLDOWN_MIN * 60
+        last_close = _recently_closed.get(token_mint, 0)
+        elapsed_s  = time.time() - last_close
+        if elapsed_s < cooldown_s:
+            log.debug(
+                f"[SIM] {symbol} — cooldown activo "
+                f"({elapsed_s/60:.1f}/{SIM_REENTRY_COOLDOWN_MIN:.0f}min) — re-entrada bloqueada"
+            )
+            return
+
         # Reservar el slot inmediatamente para evitar race conditions
         _positions[token_mint] = {}  # placeholder
 
@@ -550,6 +567,9 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str,
         log.debug(f"[SIM] Venta de {symbol} sin posición abierta — ignorando")
         return
 
+    # Registrar cierre para cooldown de re-entradas
+    _recently_closed[token_mint] = time.time()
+
     hold_sec = time.time() - pos["opened_at"]
     hold_min = hold_sec / 60
 
@@ -573,15 +593,38 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str,
     exit_liquidity = exit_context.get("liquidity_usd", 0) if exit_context else entry_liquidity
 
     slippage_entry = _calc_slippage_dynamic(amount_usd, entry_liquidity, is_sell=False)
-    slippage_exit = _calc_slippage_dynamic(amount_usd, exit_liquidity, is_sell=True)
+    slippage_exit  = _calc_slippage_dynamic(amount_usd, exit_liquidity, is_sell=True)
 
     # ⚠️ TEST #3: Market impact NO lineal (raíz cuadrada) — solo en venta
     market_impact = _calc_market_impact(amount_usd, exit_liquidity)
+
+    # Cap de fricción combinada en salida — si slippage_exit + market_impact supera el límite
+    # la TX fallaría en real; escalamos proporcionalmente para no simular pérdidas irreales.
+    combined_exit = slippage_exit + market_impact
+    if combined_exit > SIM_MAX_EXIT_FRICTION:
+        ratio = SIM_MAX_EXIT_FRICTION / combined_exit
+        log.debug(
+            f"[SIM] {symbol} — fricción salida {combined_exit*100:.1f}% > "
+            f"{SIM_MAX_EXIT_FRICTION*100:.0f}% máx → escalando ×{ratio:.2f}"
+        )
+        slippage_exit *= ratio
+        market_impact *= ratio
 
     # Ajuste de slippage: compramos peor y vendemos peor que el precio de mercado
     entry_adj = entry * (1 + slippage_entry)
     exit_adj = price_exit * (1 - slippage_exit) * (1 - market_impact)
 
+    # ⚠️ AUDITORÍA PNLPCT — Matemática correcta, pero sin SL/TP automático en SIM:
+    # - Tokens micro-cap (1e-6 USD) pueden 100x → pnl_pct gigantesco (~9,300%)
+    # - Con capital inicial $50 → ganancias grandes son posibles (~$1,860 por trade)
+    # - SIN LÍMITE DE HOLD (antiguo 10,000min): posiciones se acumulan indefinidamente
+    #   → ROI artificial 72,611% en 24h ✗
+    # - CON FIX (SIM_MAX_HOLD_MIN=30min): cierre forzado realista
+    #   → limita ganancias a lo que ocurriría en pump.fun real (30min máx) ✓
+    # NO hay overflow matemático real. La fórmula es sana:
+    #   pnl_pct = (exit_adj - entry_adj) / entry_adj * 100  ← siempre > 0
+    #   pnl_usd = amount_usd * pnl_pct / 100             ← proporcional, acotado
+    # TODO: Implementar SL/TP automático en futuras versiones para producción.
     pnl_pct = (exit_adj - entry_adj) / entry_adj * 100
     pnl_usd = amount_usd * pnl_pct / 100
 

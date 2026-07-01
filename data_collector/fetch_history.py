@@ -146,6 +146,7 @@ def get_signatures(wallet: str, days_back: int = DAYS_BACK) -> list[str]:
     cutoff = int(time.time()) - (days_back * 86400)
     sigs = []
     before = None
+    empty_batches = 0  # batches consecutivos sin firmas válidas nuevas
 
     while True:
         params: list = [wallet, {"limit": 1000, "commitment": "confirmed"}]
@@ -173,6 +174,23 @@ def get_signatures(wallet: str, days_back: int = DAYS_BACK) -> list[str]:
 
         sigs.extend(new_sigs)
         before = batch[-1]["signature"]
+
+        # Buscar el blockTime válido más antiguo del batch para saber si salimos de la ventana
+        for item in reversed(batch):
+            last_valid_bt = item.get("blockTime") or 0
+            if last_valid_bt > 0:
+                if last_valid_bt < cutoff:
+                    stop = True
+                break
+
+        # Si el batch entero no aportó firmas válidas, es un tramo de txs con error
+        if not new_sigs:
+            empty_batches += 1
+            if empty_batches >= 3:
+                log.warning(f"  {wallet[:8]}... — 3 batches sin firmas válidas, saliendo")
+                break
+        else:
+            empty_batches = 0
 
         if len(sigs) >= MAX_SIGS_WALLET:
             sigs = sigs[:MAX_SIGS_WALLET]

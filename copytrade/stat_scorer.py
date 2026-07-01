@@ -1,24 +1,26 @@
 """
-Scorer estadístico derivado del análisis de 4,913 trades históricos en wallet_history.db.
-No requiere Groq — determinista, siempre disponible.
+Scorer estadístico — actualizado 29/06/2026 con 2,659 trades reales (WIN/LOSS).
 
-Patrones medidos (WIN vs LOSS por rango):
-  token_age 5-15min   → WR 60.1%
-  token_age 15-30min  → WR 51.5%
-  token_age 60min+    → WR 27.6%
-  liq $2k-$10k        → WR 48.5%
-  liq $0              → WR 37.9%
-  mcap $5k-$20k       → WR 53.5%
-  mcap $100k+         → WR 39.0%
-  buys_5m 200+        → WR 68.1%
-  buys_5m 50-200      → WR 59.4%
-  buys_5m 10-50       → WR 36.0%
-  price_1h >200%      → WR 70.5%
-  price_1h -50 a 0%   → WR 48.2%
-  price_1h 50-200%    → WR 16.7%
-  Raydium             → WR 79.2%
-  PumpSwap            → WR 42.5%
-  Jupiter             → WR  0.0%
+Patrones medidos de wallets élite (Theo, Cupsey, Decu, Nyhrox, Cented, Domy):
+  buys_5m 0-10      → WR 82.3%  (1,287 trades)
+  buys_5m 10-100    → WR 90.1%  (81 trades)   ← zona óptima
+  buys_5m 100-500   → WR 52.2%  (25 trades)   ← zona peligrosa
+  buys_5m 500+      → WR 95.5%  (22 trades)   ← viral confirmado
+  PumpSwap          → WR 90.0%  (532 trades)
+  Pump.fun          → WR 77.8%  (2,105 trades)
+  Raydium           → WR 100%   (19 trades — muestra pequeña)
+  Jupiter           → WR 0.0%   (3 trades)    ← rechazar siempre
+  token_age 0-5min  → WR 82.8%
+  token_age 5-10min → WR 89.2%  ← mejor rango
+  token_age 10-15m  → WR 87.0%
+  token_age 15-30m  → WR 78.7%
+  token_age 60min+  → WR 75.7%
+  mcap 20k-50k      → WR 90.8%  ← mejor rango
+  mcap <5k          → WR 80.8%
+  mcap 100k+        → WR 84.0%
+  price_1h -50-0%   → WR 86.3%  (dip comprable)
+  price_1h 0-50%    → WR 79.9%
+  price_1h 200%+    → WR 81.6%
 """
 
 import os
@@ -26,7 +28,7 @@ from utils.logger import get_logger
 
 log = get_logger("stat_scorer")
 
-THRESHOLD = int(os.getenv("SCORER_THRESHOLD", "65"))
+THRESHOLD = int(os.getenv("SCORER_THRESHOLD", "55"))
 
 
 def score_token(token_info: dict) -> tuple[int, bool, str]:
@@ -34,7 +36,7 @@ def score_token(token_info: dict) -> tuple[int, bool, str]:
     Evalúa un token usando patrones estadísticos.
     Retorna (score 0-100, passed, reason_str).
     """
-    score = 0
+    score = 50   # base neutro
     reasons: list[str] = []
 
     age     = token_info.get("token_age_min")
@@ -46,105 +48,108 @@ def score_token(token_info: dict) -> tuple[int, bool, str]:
     sells   = int(token_info.get("sells_5m") or 0)
     program = token_info.get("program", "")
 
-    # ── Rechazos duros (zona de pérdida garantizada) ─────────────────────
-    if buys < 50:
-        return (0, False, f"buys_5m={buys} < 50 — WR 36%, rechazado")
+    # ── Rechazos duros ───────────────────────────────────────────────────
+    if program == "Jupiter":
+        return (0, False, "Jupiter WR=0% — rechazado siempre")
 
-    if ch1h is not None and 50 <= ch1h <= 200:
-        return (0, False, f"1h={ch1h:.0f}% — ya bombeó [WR 16%], rechazado")
+    if 100 <= buys <= 500 and sells > 0:
+        ratio = sells / buys if buys > 0 else 0
+        if ratio > 0.7:
+            return (0, False, f"buys 100-500 + ratio venta {ratio:.1f} — distribución activa [WR 52%]")
 
-    if sells > 0 and buys > 0 and sells / buys > 0.6:
-        return (0, False, f"presión vendedora: {sells}S/{buys}B ratio {sells/buys:.1f} — distribución")
+    # ── Programa ─────────────────────────────────────────────────────────
+    if program == "PumpSwap":
+        score += 20
+        reasons.append("+20 PumpSwap [WR 90%]")
+    elif program == "Raydium":
+        score += 25
+        reasons.append("+25 Raydium [WR 100%]")
+    elif program == "Pump.fun":
+        score += 5
+        reasons.append("+5 Pump.fun [WR 78%]")
+
+    # ── Buys 5m ──────────────────────────────────────────────────────────
+    if buys >= 500:
+        score += 20
+        reasons.append(f"+20 buys_5m={buys} [WR 95% — viral]")
+    elif 10 <= buys < 100:
+        score += 15
+        reasons.append(f"+15 buys_5m={buys} [WR 90% — zona óptima]")
+    elif buys < 10:
+        score += 5
+        reasons.append(f"+5 buys_5m={buys} [WR 82%]")
+    elif 100 <= buys < 500:
+        score -= 15
+        reasons.append(f"-15 buys_5m={buys} [WR 52% — zona peligrosa]")
 
     # ── Token age ────────────────────────────────────────────────────────
     if age is not None:
-        if 5 <= age <= 15:
-            score += 25
-            reasons.append(f"+25 edad {age:.1f}min [WR 60%]")
-        elif 15 < age <= 30:
+        if 5 <= age <= 10:
             score += 15
-            reasons.append(f"+15 edad {age:.1f}min [WR 51%]")
+            reasons.append(f"+15 edad {age:.1f}min [WR 89% — óptimo]")
         elif age < 5:
-            score -= 5
-            reasons.append(f"-5 edad {age:.1f}min (muy fresco)")
-        elif 30 < age <= 60:
-            score -= 10
-            reasons.append(f"-10 edad {age:.1f}min (maduro)")
-        else:
-            score -= 30
-            reasons.append(f"-30 edad {age:.1f}min [WR 27% - evitar]")
+            score += 10
+            reasons.append(f"+10 edad {age:.1f}min [WR 83%]")
+        elif 10 < age <= 30:
+            score += 8
+            reasons.append(f"+8 edad {age:.1f}min [WR 83%]")
+        elif age > 30:
+            score += 3
+            reasons.append(f"+3 edad {age:.1f}min [WR 79%]")
+
+    # ── MCap ─────────────────────────────────────────────────────────────
+    if 20000 <= mcap <= 50000:
+        score += 15
+        reasons.append(f"+15 mcap ${mcap:.0f} [WR 90% — sweet spot]")
+    elif 5000 <= mcap < 20000:
+        score += 10
+        reasons.append(f"+10 mcap ${mcap:.0f} [WR 87%]")
+    elif 50000 <= mcap <= 100000:
+        score += 8
+        reasons.append(f"+8 mcap ${mcap:.0f} [WR 87%]")
+    elif mcap > 100000:
+        score += 5
+        reasons.append(f"+5 mcap ${mcap:.0f} [WR 84%]")
+    elif 0 < mcap < 5000:
+        score += 3
+        reasons.append(f"+3 mcap ${mcap:.0f} [WR 81%]")
 
     # ── Liquidez ─────────────────────────────────────────────────────────
     token_fresh = age is not None and age < 10
     if liq == 0:
-        if token_fresh:
-            reasons.append("~0 sin liquidez DexScreener (token <10min, normal)")
-        else:
-            score -= 25
-            reasons.append("-25 sin liquidez [WR 37%]")
+        if not token_fresh:
+            score -= 10
+            reasons.append("-10 sin liquidez DexScreener (token >10min)")
+    elif liq >= 1000:
+        score += 10
+        reasons.append(f"+10 liq ${liq:.0f} >= $1k")
     elif liq < 500:
-        score -= 15
-        reasons.append(f"-15 liq ${liq:.0f} (demasiado baja)")
-    elif 2000 <= liq <= 10000:
-        score += 20
-        reasons.append(f"+20 liq ${liq:.0f} [WR 48%]")
-    elif 500 <= liq < 2000:
-        score += 5
-        reasons.append(f"+5 liq ${liq:.0f} (aceptable)")
-
-    # ── MCap ─────────────────────────────────────────────────────────────
-    if 5000 <= mcap <= 20000:
-        score += 20
-        reasons.append(f"+20 mcap ${mcap:.0f} [WR 53%]")
-    elif mcap > 100000:
-        score -= 10
-        reasons.append(f"-10 mcap ${mcap:.0f} (muy alto)")
-    elif 20000 < mcap <= 100000:
-        score += 5
-        reasons.append(f"+5 mcap ${mcap:.0f}")
+        score -= 5
+        reasons.append(f"-5 liq ${liq:.0f} < $500")
 
     # ── Price change 1h ──────────────────────────────────────────────────
     if ch1h is not None:
-        if ch1h > 200:
-            score += 25
-            reasons.append(f"+25 1h={ch1h:.0f}% [WR 70% - momentum fuerte]")
-        elif -50 <= ch1h <= 0:
+        if -50 <= ch1h < 0:
             score += 10
-            reasons.append(f"+10 1h={ch1h:.0f}% [WR 48% - dip comprable]")
-        elif 50 <= ch1h <= 200:
-            score -= 20
-            reasons.append(f"-20 1h={ch1h:.0f}% [WR 16% - ya bombeó]")
+            reasons.append(f"+10 1h={ch1h:.0f}% [WR 86% — dip comprable]")
+        elif 0 <= ch1h <= 50:
+            score += 5
+            reasons.append(f"+5 1h={ch1h:.0f}% [WR 80%]")
+        elif ch1h > 200:
+            score += 8
+            reasons.append(f"+8 1h={ch1h:.0f}% [WR 82% — momentum fuerte]")
         elif ch1h < -50:
             score -= 5
             reasons.append(f"-5 1h={ch1h:.0f}% (caída fuerte)")
 
-    # ── Buys 5m ──────────────────────────────────────────────────────────
-    if buys >= 200:
-        score += 25
-        reasons.append(f"+25 buys_5m={buys} [WR 68% - alta presión]")
-    elif buys >= 50:
-        score += 15
-        reasons.append(f"+15 buys_5m={buys} [WR 59%]")
-
     # ── Price change 5m (momentum reciente) ──────────────────────────────
     if ch5m is not None:
         if ch5m > 20:
-            score += 15
-            reasons.append(f"+15 5m={ch5m:.0f}% — momentum activo")
-        elif ch5m < -10:
-            score -= 15
-            reasons.append(f"-15 5m={ch5m:.0f}% — cayendo ahora")
-
-    # ── Programa ─────────────────────────────────────────────────────────
-    if program == "Raydium":
-        score += 20
-        reasons.append("+20 Raydium [WR 79%]")
-    elif program == "PumpSwap":
-        score += 5
-        reasons.append("+5 PumpSwap [WR 42%]")
-    elif program == "Jupiter":
-        score -= 50
-        reasons.append("-50 Jupiter [WR 0% - evitar siempre]")
+            score += 10
+            reasons.append(f"+10 5m={ch5m:.0f}% — momentum activo")
+        elif ch5m < -15:
+            score -= 10
+            reasons.append(f"-10 5m={ch5m:.0f}% — cayendo ahora")
 
     score = max(0, min(100, score))
     passed = score >= THRESHOLD

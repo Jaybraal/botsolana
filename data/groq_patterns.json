@@ -1,1 +1,550 @@
-{}
+{
+  "Cupsey": {
+    "wallet": "Cupsey",
+    "win_rate": 0.55,
+    "total_trades": 600,
+    "patterns": {
+      "buy_signals": [
+        {
+          "feature": "edad_token",
+          "condition": "menor_que",
+          "value": 10,
+          "confidence": 80,
+          "description": "Tokens con edad menor a 10 minutos tienen mayor probabilidad de generar ganancias"
+        },
+        {
+          "feature": "liquidez",
+          "condition": "mayor_que",
+          "value": 1000,
+          "confidence": 70,
+          "description": "Tokens con liquidez mayor a $1000 tienen mayor probabilidad de generar ganancias"
+        },
+        {
+          "feature": "mcap",
+          "condition": "menor_que",
+          "value": 10000,
+          "confidence": 60,
+          "description": "Tokens con capitalización de mercado menor a $10,000 tienen mayor probabilidad de generar ganancias"
+        },
+        {
+          "feature": "SOL_gastados",
+          "condition": "menor_que",
+          "value": 1,
+          "confidence": 50,
+          "description": "Tokens con menos de 1 SOL gastado tienen mayor probabilidad de generar ganancias"
+        }
+      ],
+      "avoid_signals": [
+        {
+          "feature": "edad_token",
+          "condition": "mayor_que",
+          "value": 100,
+          "confidence": 80,
+          "description": "Tokens con edad mayor a 100 minutos tienen mayor probabilidad de generar pérdidas"
+        },
+        {
+          "feature": "liquidez",
+          "condition": "menor_que",
+          "value": 100,
+          "confidence": 70,
+          "description": "Tokens con liquidez menor a $100 tienen mayor probabilidad de generar pérdidas"
+        },
+        {
+          "feature": "mcap",
+          "condition": "mayor_que",
+          "value": 50000,
+          "confidence": 60,
+          "description": "Tokens con capitalización de mercado mayor a $50,000 tienen mayor probabilidad de generar pérdidas"
+        },
+        {
+          "feature": "SOL_gastados",
+          "condition": "mayor_que",
+          "value": 5,
+          "confidence": 50,
+          "description": "Tokens con más de 5 SOL gastado tienen mayor probabilidad de generar pérdidas"
+        }
+      ],
+      "best_program": "PumpSwap",
+      "ideal_token_age_min": {
+        "min": 1,
+        "max": 10
+      },
+      "ideal_liquidity_usd": {
+        "min": 1000,
+        "max": 10000
+      },
+      "ideal_mcap_usd": {
+        "min": 1000,
+        "max": 10000
+      },
+      "summary": "La wallet Cupsey tiene una tasa de ganancias del 55% y un total de 600 trades. Los tokens con edad menor a 10 minutos, liquidez mayor a $1000 y capitalización de mercado menor a $10,000 tienen mayor probabilidad de generar ganancias. Es recomendable evitar tokens con edad mayor a 100 minutos, liquidez menor a $100 y capitalización de mercado mayor a $50,000."
+    }
+  },
+  "Cupsey-2": {
+    "wallet": "Cupsey-2",
+    "win_rate": 0.55,
+    "total_trades": 380,
+    "patterns": {
+      "buy_signals": [
+        {
+          "feature": "edad_token",
+          "condition": "menor_que",
+          "value": 10,
+          "confidence": 70,
+          "description": "Los tokens con edad menor a 10 minutos tienen más probabilidades de generar ganancias"
+        },
+        {
+          "feature": "liquidez",
+          "condition": "mayor_que",
+          "value": 1000,
+          "confidence": 60,
+          "description": "Los tokens con liquidez mayor a $1000 tienen más probabilidades de generar ganancias"
+        },
+        {
+          "feature": "cambio_precio_5m",
+          "condition": "mayor_que",
+          "value": 0,
+          "confidence": 80,
+          "description": "Los tokens con cambio de precio en 5 minutos mayor a 0 tienen más probabilidades de generar ganancias"
+        }
+      ],
+      "avoid_signals": [
+        {
+          "feature": "SOL_gastados",
+          "condition": "mayor_que",
+          "value": 5,
+          "confidence": 80,
+          "description": "Los tokens con más de 5 SOL gastados tienen más probabilidades de generar pérdidas"
+        },
+        {
+          "feature": "edad_token",
+          "condition": "mayor_que",
+          "value": 60,
+          "confidence": 70,
+          "description": "Los tokens con edad mayor a 60 minutos tienen más probabilidades de generar pérdidas"
+        }
+      ],
+      "best_program": "PumpSwap",
+      "ideal_token_age_min": {
+        "min": 0,
+        "max": 10
+      },
+      "ideal_liquidity_usd": {
+        "min": 1000,
+        "max": 100000
+      },
+      "ideal_mcap_usd": {
+        "min": 1000,
+        "max": 1000000
+      },
+      "summary": "La wallet Cupsey-2 tiene un ratio de ganancias del 55% y un total de 380 trades. Los tokens con edad menor a 10 minutos, liquidez mayor a $1000 y cambio de precio en 5 minutos mayor a 0 tienen más probabilidades de generar ganancias. Es recomendable evitar tokens con más de 5 SOL gastados y edad mayor a 60 minutos."
+    }
+  },
+  "Theo": {
+    "wallet": "Theo",
+    "win_rate": 0.63,
+    "total_trades": 300,
+    "patterns": {
+      "buy_signals": [
+        {
+          "feature": "SOL_gastados",
+          "condition": "menor_que",
+          "value": 1.5,
+          "confidence": 80,
+          "description": "Cuando se gastan menos de 1.5 SOL, la probabilidad de ganancia aumenta"
+        },
+        {
+          "feature": "edad_token",
+          "condition": "entre",
+          "value": [
+            0,
+            2
+          ],
+          "confidence": 70,
+          "description": "Los tokens con edad entre 0 y 2 minutos tienen una mayor probabilidad de ganancia"
+        },
+        {
+          "feature": "cambio_precio_5m",
+          "condition": "igual",
+          "value": 0,
+          "confidence": 60,
+          "description": "Cuando el cambio de precio en 5 minutos es 0, la probabilidad de ganancia aumenta"
+        }
+      ],
+      "avoid_signals": [
+        {
+          "feature": "SOL_gastados",
+          "condition": "mayor_que",
+          "value": 5,
+          "confidence": 90,
+          "description": "Cuando se gastan más de 5 SOL, la probabilidad de pérdida aumenta"
+        },
+        {
+          "feature": "edad_token",
+          "condition": "mayor_que",
+          "value": 10,
+          "confidence": 80,
+          "description": "Los tokens con edad mayor a 10 minutos tienen una mayor probabilidad de pérdida"
+        },
+        {
+          "feature": "cambio_precio_1h",
+          "condition": "menor_que",
+          "value": -10,
+          "confidence": 70,
+          "description": "Cuando el cambio de precio en 1 hora es menor a -10, la probabilidad de pérdida aumenta"
+        }
+      ],
+      "best_program": "Pump.fun",
+      "ideal_token_age_min": {
+        "min": 0,
+        "max": 2
+      },
+      "ideal_liquidity_usd": {
+        "min": 0,
+        "max": 10000
+      },
+      "ideal_mcap_usd": {
+        "min": 2000,
+        "max": 5000
+      },
+      "summary": "La wallet de Theo tiene una tasa de ganancia del 63% y un total de 300 trades. Los patrones identificados sugieren que es mejor comprar tokens con edad entre 0 y 2 minutos, con un cambio de precio en 5 minutos igual a 0 y con un gasto de SOL menor a 1.5. Es importante evitar tokens con edad mayor a 10 minutos, con un gasto de SOL mayor a 5 y con un cambio de precio en 1 hora menor a -10."
+    }
+  },
+  "Decu": {
+    "wallet": "Decu",
+    "win_rate": 0.71,
+    "total_trades": 390,
+    "patterns": {
+      "buy_signals": [
+        {
+          "feature": "edad_token",
+          "condition": "menor_que",
+          "value": 5,
+          "confidence": 80,
+          "description": "Tokens con edad menor a 5 minutos tienen mayor probabilidad de generar ganancias"
+        },
+        {
+          "feature": "liquidez",
+          "condition": "mayor_que",
+          "value": 1000,
+          "confidence": 70,
+          "description": "Tokens con liquidez mayor a $1000 tienen mayor probabilidad de generar ganancias"
+        },
+        {
+          "feature": "cambio_precio_5m",
+          "condition": "igual",
+          "value": 0,
+          "confidence": 60,
+          "description": "Tokens con cambio de precio en 5 minutos igual a 0 tienen mayor probabilidad de generar ganancias"
+        }
+      ],
+      "avoid_signals": [
+        {
+          "feature": "SOL_gastados",
+          "condition": "mayor_que",
+          "value": 2,
+          "confidence": 90,
+          "description": "Tokens con más de 2 SOL gastados tienen mayor probabilidad de generar pérdidas"
+        },
+        {
+          "feature": "cambio_precio_1h",
+          "condition": "menor_que",
+          "value": -10,
+          "confidence": 80,
+          "description": "Tokens con cambio de precio en 1 hora menor a -10% tienen mayor probabilidad de generar pérdidas"
+        }
+      ],
+      "best_program": "Pump.fun",
+      "ideal_token_age_min": {
+        "min": 0,
+        "max": 5
+      },
+      "ideal_liquidity_usd": {
+        "min": 1000,
+        "max": 10000
+      },
+      "ideal_mcap_usd": {
+        "min": 1000,
+        "max": 10000
+      },
+      "summary": "La wallet Decu tiene un alto índice de ganancias cuando invierte en tokens con edad menor a 5 minutos, liquidez mayor a $1000 y cambio de precio en 5 minutos igual a 0. Es recomendable evitar tokens con más de 2 SOL gastados y cambio de precio en 1 hora menor a -10%. La plataforma Pump.fun es la más rentable para esta wallet."
+    }
+  },
+  "Cented": {
+    "wallet": "Cented",
+    "win_rate": 0.52,
+    "total_trades": 161,
+    "patterns": {
+      "buy_signals": [
+        {
+          "feature": "edad_token",
+          "condition": "menor_que",
+          "value": 5,
+          "confidence": 80,
+          "description": "Tokens con edad menor a 5 minutos tienen mayor probabilidad de generar ganancias"
+        },
+        {
+          "feature": "cambio_precio_5m",
+          "condition": "mayor_que",
+          "value": 0,
+          "confidence": 70,
+          "description": "Tokens con aumento de precio en los últimos 5 minutos tienen mayor probabilidad de generar ganancias"
+        },
+        {
+          "feature": "compras_5m",
+          "condition": "mayor_que",
+          "value": 5,
+          "confidence": 60,
+          "description": "Tokens con más de 5 compras en los últimos 5 minutos tienen mayor probabilidad de generar ganancias"
+        }
+      ],
+      "avoid_signals": [
+        {
+          "feature": "edad_token",
+          "condition": "mayor_que",
+          "value": 20,
+          "confidence": 80,
+          "description": "Tokens con edad mayor a 20 minutos tienen menor probabilidad de generar ganancias"
+        },
+        {
+          "feature": "cambio_precio_1h",
+          "condition": "menor_que",
+          "value": -5,
+          "confidence": 70,
+          "description": "Tokens con disminución de precio en la última hora tienen menor probabilidad de generar ganancias"
+        },
+        {
+          "feature": "ventas_5m",
+          "condition": "mayor_que",
+          "value": 10,
+          "confidence": 60,
+          "description": "Tokens con más de 10 ventas en los últimos 5 minutos tienen menor probabilidad de generar ganancias"
+        }
+      ],
+      "best_program": "Pump.fun",
+      "ideal_token_age_min": {
+        "min": 0,
+        "max": 5
+      },
+      "ideal_liquidity_usd": {
+        "min": 0,
+        "max": 10000
+      },
+      "ideal_mcap_usd": {
+        "min": 2000,
+        "max": 50000
+      },
+      "summary": "La wallet Cented tiene una tasa de ganancias del 52% y un total de 161 trades. Los tokens con edad menor a 5 minutos, aumento de precio en los últimos 5 minutos y más de 5 compras en los últimos 5 minutos tienen mayor probabilidad de generar ganancias. Es recomendable evitar tokens con edad mayor a 20 minutos, disminución de precio en la última hora y más de 10 ventas en los últimos 5 minutos."
+    }
+  },
+  "Trey": {
+    "wallet": "Trey",
+    "win_rate": 0.43,
+    "total_trades": 185,
+    "patterns": {
+      "buy_signals": [
+        {
+          "feature": "edad_token",
+          "condition": "menor_que",
+          "value": 30,
+          "confidence": 70,
+          "description": "Los tokens con edad menor a 30 minutos tienen más probabilidades de generar ganancias."
+        },
+        {
+          "feature": "cambio_precio_5m",
+          "condition": "mayor_que",
+          "value": 0,
+          "confidence": 60,
+          "description": "Los tokens con un cambio de precio en los últimos 5 minutos mayor a 0 tienen más probabilidades de generar ganancias."
+        },
+        {
+          "feature": "SOL_gastados",
+          "condition": "menor_que",
+          "value": 5,
+          "confidence": 80,
+          "description": "Los tokens con un gasto de SOL menor a 5 tienen más probabilidades de generar ganancias."
+        }
+      ],
+      "avoid_signals": [
+        {
+          "feature": "edad_token",
+          "condition": "mayor_que",
+          "value": 1000,
+          "confidence": 80,
+          "description": "Los tokens con edad mayor a 1000 minutos tienen más probabilidades de generar pérdidas."
+        },
+        {
+          "feature": "cambio_precio_1h",
+          "condition": "menor_que",
+          "value": -5,
+          "confidence": 70,
+          "description": "Los tokens con un cambio de precio en la última hora menor a -5 tienen más probabilidades de generar pérdidas."
+        },
+        {
+          "feature": "liquidez",
+          "condition": "menor_que",
+          "value": 1000,
+          "confidence": 60,
+          "description": "Los tokens con liquidez menor a 1000 tienen más probabilidades de generar pérdidas."
+        }
+      ],
+      "best_program": "Pump.fun",
+      "ideal_token_age_min": {
+        "min": 1,
+        "max": 30
+      },
+      "ideal_liquidity_usd": {
+        "min": 1000,
+        "max": 10000
+      },
+      "ideal_mcap_usd": {
+        "min": 1000,
+        "max": 50000
+      },
+      "summary": "La wallet de Trey tiene un ritmo de ganancias del 43% y un total de 185 trades. Los tokens con edad menor a 30 minutos, cambio de precio en los últimos 5 minutos mayor a 0 y gasto de SOL menor a 5 tienen más probabilidades de generar ganancias. Es recomendable evitar tokens con edad mayor a 1000 minutos, cambio de precio en la última hora menor a -5 y liquidez menor a 1000."
+    }
+  },
+  "Nyhrox": {
+    "wallet": "Nyhrox",
+    "win_rate": 0.41,
+    "total_trades": 318,
+    "patterns": {
+      "buy_signals": [
+        {
+          "feature": "edad_token",
+          "condition": "menor_que",
+          "value": 10,
+          "confidence": 70,
+          "description": "Los tokens con edad menor a 10 minutos tienen más probabilidades de generar ganancias."
+        },
+        {
+          "feature": "liquidez",
+          "condition": "mayor_que",
+          "value": 3000,
+          "confidence": 60,
+          "description": "Los tokens con liquidez mayor a $3000 tienen más probabilidades de generar ganancias."
+        },
+        {
+          "feature": "cambio_precio_1h",
+          "condition": "mayor_que",
+          "value": 0,
+          "confidence": 55,
+          "description": "Los tokens con cambio de precio en 1 hora mayor a 0% tienen más probabilidades de generar ganancias."
+        }
+      ],
+      "avoid_signals": [
+        {
+          "feature": "edad_token",
+          "condition": "mayor_que",
+          "value": 100,
+          "confidence": 80,
+          "description": "Los tokens con edad mayor a 100 minutos tienen más probabilidades de generar pérdidas."
+        },
+        {
+          "feature": "liquidez",
+          "condition": "menor_que",
+          "value": 1000,
+          "confidence": 65,
+          "description": "Los tokens con liquidez menor a $1000 tienen más probabilidades de generar pérdidas."
+        },
+        {
+          "feature": "cambio_precio_5m",
+          "condition": "menor_que",
+          "value": -2,
+          "confidence": 50,
+          "description": "Los tokens con cambio de precio en 5 minutos menor a -2% tienen más probabilidades de generar pérdidas."
+        }
+      ],
+      "best_program": "PumpSwap",
+      "ideal_token_age_min": {
+        "min": 1,
+        "max": 10
+      },
+      "ideal_liquidity_usd": {
+        "min": 3000,
+        "max": 10000
+      },
+      "ideal_mcap_usd": {
+        "min": 1000,
+        "max": 5000
+      },
+      "summary": "La wallet Nyhrox tiene un ratio de ganancias del 41% y un total de 318 trades. Los tokens con edad menor a 10 minutos, liquidez mayor a $3000 y cambio de precio en 1 hora mayor a 0% tienen más probabilidades de generar ganancias. Es recomendable evitar tokens con edad mayor a 100 minutos, liquidez menor a $1000 y cambio de precio en 5 minutos menor a -2%."
+    }
+  },
+  "Domy": {
+    "wallet": "Domy",
+    "win_rate": 0.73,
+    "total_trades": 315,
+    "patterns": {
+      "buy_signals": [
+        {
+          "feature": "SOL_gastados",
+          "condition": "menor_que",
+          "value": 0.1,
+          "confidence": 85,
+          "description": "Cuando se gastan menos de 0.1 SOL, la probabilidad de ganancia es alta"
+        },
+        {
+          "feature": "hold_tiempo",
+          "condition": "menor_que",
+          "value": 0.5,
+          "confidence": 80,
+          "description": "Cuando el tiempo de hold es menor a 0.5 minutos, la probabilidad de ganancia es alta"
+        },
+        {
+          "feature": "pnl",
+          "condition": "mayor_que",
+          "value": 1000,
+          "confidence": 90,
+          "description": "Cuando el pnl es mayor a 1000, la probabilidad de ganancia es muy alta"
+        }
+      ],
+      "avoid_signals": [
+        {
+          "feature": "SOL_gastados",
+          "condition": "mayor_que",
+          "value": 10,
+          "confidence": 80,
+          "description": "Cuando se gastan más de 10 SOL, la probabilidad de pérdida es alta"
+        },
+        {
+          "feature": "hold_tiempo",
+          "condition": "mayor_que",
+          "value": 1,
+          "confidence": 75,
+          "description": "Cuando el tiempo de hold es mayor a 1 minuto, la probabilidad de pérdida es alta"
+        }
+      ],
+      "best_program": "Pump.fun",
+      "ideal_token_age_min": {
+        "min": 0,
+        "max": 10
+      },
+      "ideal_liquidity_usd": {
+        "min": 0,
+        "max": 1000
+      },
+      "ideal_mcap_usd": {
+        "min": 0,
+        "max": 10000
+      },
+      "summary": "La wallet Domy tiene una tasa de ganancia del 73% y un total de 315 trades. Es recomendable copiar esta wallet cuando se gastan menos de 0.1 SOL y el tiempo de hold es menor a 0.5 minutos. También es importante evitar trades con más de 10 SOL gastados y un tiempo de hold mayor a 1 minuto."
+    }
+  },
+  "_combined": {
+    "recommended_wallets": [
+      "Domy",
+      "Theo"
+    ],
+    "avoid_wallets": [],
+    "universal_filters": {
+      "min_liquidity_usd": 1000,
+      "max_token_age_min": 10,
+      "preferred_programs": [
+        "Pump.fun"
+      ],
+      "min_buys_5m": 5
+    },
+    "strategy_summary": "La estrategia óptima consiste en copiar las wallets Domy y Theo, que tienen tasas de ganancia del 73% y 63% respectivamente. Se deben evitar tokens con edad mayor a 10 minutos y liquidez menor a $1000. La plataforma Pump.fun es la más rentable para la wallet Decu, por lo que se recomienda utilizarla."
+  }
+}
