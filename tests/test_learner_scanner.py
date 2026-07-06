@@ -105,15 +105,15 @@ def test_score_and_decide_rejects_zero_price():
 # ── monitor exit conditions ──────────────────────────────────────────────────
 
 def test_stop_loss_threshold():
-    """SL se activa a -8% (valor por defecto)."""
+    """SL se activa a -6% (valor optimizado 01/07/26, antes -8%)."""
     from copytrade.learner_scanner import STOP_LOSS_PCT
-    assert STOP_LOSS_PCT == -8.0
+    assert STOP_LOSS_PCT == -6.0
 
 
 def test_take_profit_threshold():
-    """TP se activa a +25% (valor por defecto)."""
+    """TP se activa a +15% (valor optimizado 01/07/26, antes +25%)."""
     from copytrade.learner_scanner import TAKE_PROFIT
-    assert TAKE_PROFIT == 25.0
+    assert TAKE_PROFIT == 15.0
 
 
 def test_recover_orphans_no_crash_on_missing_file(tmp_path, monkeypatch):
