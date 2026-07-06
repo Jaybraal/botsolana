@@ -54,6 +54,7 @@ TRAIL_PEAK     = float(os.getenv("AUTO_TRAILING_PEAK",   "10"))    # OPTIMIZADO:
 TRAIL_DROP     = float(os.getenv("AUTO_TRAILING_DROP",    "5"))    # OPTIMIZADO: era 7% → vender más rápido
 MAX_HOLD_MIN   = float(os.getenv("AUTO_MAX_HOLD_MIN",     "5"))    # OPTIMIZADO: era 7 min → cerrar posiciones rápido
 MONITOR_TICK   = 10  # segundos entre checks de precio
+MAX_ENTRY_DRIFT_PCT = float(os.getenv("AUTO_MAX_ENTRY_DRIFT_PCT", "10"))  # % máximo de deriva scan→ahora
 
 # Criterios hardcoded — fallback si learner_rules_copywallet.json no existe
 # OPTIMIZADO para detectar tokens TEMPRANO (antes que copy wallets)
@@ -322,10 +323,29 @@ async def _open_position(mint: str, token_info: dict, reason: str):
     if mint in _auto_positions:
         return
 
-    entry_price = token_info.get("price_usd", 0)
-    symbol      = token_info.get("symbol", mint[:6])
-    program     = token_info.get("program", "PumpSwap")
-    sol_price   = _get_sol_price()
+    scan_price   = token_info.get("price_usd", 0)
+    symbol       = token_info.get("symbol", mint[:6])
+    program      = token_info.get("program", "PumpSwap")
+    pair_address = token_info.get("pair_address", "")
+    sol_price    = _get_sol_price()
+
+    # El precio del scan puede tener hasta 5 min de retraso (SCAN_INTERVAL).
+    # Re-verificar en vivo: sin precio fresco no se compra; deriva grande = pump ya pasó.
+    fresh = await asyncio.get_running_loop().run_in_executor(
+        None, _fetch_current_price, mint, pair_address
+    )
+    if fresh <= 0:
+        log.info(f"[learner] ⛔ {symbol}: sin precio fresco verificable — skip")
+        return
+    if scan_price > 0:
+        drift_pct = abs(fresh - scan_price) / scan_price * 100
+        if drift_pct > MAX_ENTRY_DRIFT_PCT:
+            log.info(
+                f"[learner] ⛔ {symbol}: precio se movió {drift_pct:.1f}% desde el scan "
+                f"(límite {MAX_ENTRY_DRIFT_PCT:.0f}%) — skip"
+            )
+            return
+    entry_price = fresh
 
     _auto_positions[mint] = {
         "entry_price_usd": entry_price,
