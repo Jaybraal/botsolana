@@ -56,6 +56,10 @@ MAX_HOLD_MIN   = float(os.getenv("AUTO_MAX_HOLD_MIN",     "5"))    # OPTIMIZADO:
 MONITOR_TICK   = 10  # segundos entre checks de precio
 MAX_ENTRY_DRIFT_PCT = float(os.getenv("AUTO_MAX_ENTRY_DRIFT_PCT", "10"))  # % máximo de deriva scan→ahora
 
+# Filtros DUROS — datos reales (140 trades): liq<$10k → 8% WR, change_1h<50% → 12% WR
+HARD_MIN_LIQUIDITY_USD = float(os.getenv("AUTO_HARD_MIN_LIQUIDITY_USD", "10000"))
+HARD_MIN_CHANGE_1H_PCT = float(os.getenv("AUTO_HARD_MIN_CHANGE_1H_PCT", "50"))
+
 # Criterios hardcoded — fallback si learner_rules_copywallet.json no existe
 # OPTIMIZADO para detectar tokens TEMPRANO (antes que copy wallets)
 _FALLBACK_RULES = {
@@ -142,6 +146,20 @@ def _score_and_decide(token_info: dict) -> tuple[bool, str]:
     """
     if not token_info.get("price_usd"):
         return False, "precio USD = 0 — descartado"
+
+    # Filtros duros: no negociables aunque el resto de criterios pase
+    liq = token_info.get("liquidity_usd") or 0
+    if liq < HARD_MIN_LIQUIDITY_USD:
+        return False, (
+            f"filtro duro: liquidez ${liq:,.0f} < ${HARD_MIN_LIQUIDITY_USD:,.0f} "
+            f"(WR histórico 8%)"
+        )
+    ch1 = token_info.get("price_change_1h")
+    if ch1 is not None and ch1 < HARD_MIN_CHANGE_1H_PCT:
+        return False, (
+            f"filtro duro: change_1h {ch1:.0f}% < {HARD_MIN_CHANGE_1H_PCT:.0f}% "
+            f"(WR histórico 12%)"
+        )
 
     # Primera capa: stat_scorer
     score, _stat_passed, stat_reason = stat_score(token_info)
