@@ -45,25 +45,26 @@ PUMPPORTAL_API = "https://pumpportal.fun/api/coin-data"
 # ── Config ────────────────────────────────────────────────────────────────────
 ENABLED        = os.getenv("LEARNER_SCANNER_ENABLED", "true").lower() == "true"
 SCAN_INTERVAL  = float(os.getenv("LEARNER_SCAN_INTERVAL_MIN", "5")) * 60
-SCORE_THRESH   = int(os.getenv("LEARNER_SCORE_THRESHOLD", "55"))
-CRITERIA_MATCH = int(os.getenv("LEARNER_CRITERIA_MATCH", "5"))
-MAX_POSITIONS  = int(os.getenv("MAX_AUTO_POSITIONS", "2"))
-STOP_LOSS_PCT  = float(os.getenv("AUTO_STOP_LOSS_PCT",   "-8"))
-TAKE_PROFIT    = float(os.getenv("AUTO_TAKE_PROFIT_PCT", "25"))
-TRAIL_PEAK     = float(os.getenv("AUTO_TRAILING_PEAK",   "15"))
-TRAIL_DROP     = float(os.getenv("AUTO_TRAILING_DROP",    "7"))
-MAX_HOLD_MIN   = float(os.getenv("AUTO_MAX_HOLD_MIN",     "7"))
+SCORE_THRESH   = int(os.getenv("LEARNER_SCORE_THRESHOLD", "38"))    # OPTIMIZADO: era 55 → más permisivo
+CRITERIA_MATCH = int(os.getenv("LEARNER_CRITERIA_MATCH", "3"))      # OPTIMIZADO: era 5 → menos criterios requeridos
+MAX_POSITIONS  = int(os.getenv("MAX_AUTO_POSITIONS", "3"))          # OPTIMIZADO: era 2 → más posiciones simultáneas
+STOP_LOSS_PCT  = float(os.getenv("AUTO_STOP_LOSS_PCT",   "-6"))    # OPTIMIZADO: era -8% → detener pérdidas rápido
+TAKE_PROFIT    = float(os.getenv("AUTO_TAKE_PROFIT_PCT", "15"))    # OPTIMIZADO: era +25% → capturar ganancias rápido
+TRAIL_PEAK     = float(os.getenv("AUTO_TRAILING_PEAK",   "10"))    # OPTIMIZADO: era 15% → más agresivo
+TRAIL_DROP     = float(os.getenv("AUTO_TRAILING_DROP",    "5"))    # OPTIMIZADO: era 7% → vender más rápido
+MAX_HOLD_MIN   = float(os.getenv("AUTO_MAX_HOLD_MIN",     "5"))    # OPTIMIZADO: era 7 min → cerrar posiciones rápido
 MONITOR_TICK   = 10  # segundos entre checks de precio
 
 # Criterios hardcoded — fallback si learner_rules_copywallet.json no existe
+# OPTIMIZADO para detectar tokens TEMPRANO (antes que copy wallets)
 _FALLBACK_RULES = {
     "scoring_rules": {
-        "min_mcap_usd":      15571.0,
-        "max_mcap_usd":      46714.0,
-        "min_liquidity_usd":  3127.0,
-        "min_buy_pressure":   0.513,
-        "min_change_1h_pct":  78.98,
-        "max_age_days":        7.3,
+        "min_mcap_usd":      5000.0,      # OPTIMIZADO: era 15571 → capturar tokens nuevos
+        "max_mcap_usd":      100000.0,    # OPTIMIZADO: era 46714 → aceptar tokens medianos
+        "min_liquidity_usd":  1000.0,     # OPTIMIZADO: era 3127 → liquidez menor OK
+        "min_buy_pressure":   0.45,       # OPTIMIZADO: era 0.513 → menos presión requerida
+        "min_change_1h_pct":  50.0,       # OPTIMIZADO: era 78.98 → crecer menos rápido OK
+        "max_age_days":       14.0,       # OPTIMIZADO: era 7.3 → tokens ligeramente más viejos
     }
 }
 
