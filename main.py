@@ -243,4 +243,8 @@ def main():
 
 
 if __name__ == "__main__":
+    from utils.singleton import acquire_lock
+    if not acquire_lock("data/bot.lock"):
+        print("❌ Ya hay otra instancia de BotSolana corriendo (data/bot.lock). Saliendo.")
+        sys.exit(1)
     main()
