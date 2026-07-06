@@ -213,6 +213,7 @@ async def watch():
 
                 for i, wallet in enumerate(TARGET_WALLETS):
                     await subscribe_wallet(ws, wallet, i + 1)
+                    await asyncio.sleep(0.15)  # evita ráfaga que dispara el rate-limit (429) de Helius al conectar
 
                 async for msg in ws:
                     await handle_message(msg)
