@@ -76,6 +76,8 @@ _FALLBACK_RULES = {
 # Estado en memoria — {mint: {entry_price_usd, entry_time, peak_pct, symbol, program}}
 _auto_positions: dict[str, dict] = {}
 
+_monitor_tasks: dict[str, asyncio.Task] = {}  # monitores vivos por mint
+
 # Caché SOL price
 _sol_price_usd: float = 150.0
 _sol_price_ts:  float = 0.0
@@ -288,49 +290,83 @@ async def _monitor_position(mint: str, symbol: str):
         f"trailing >{TRAIL_PEAK:.0f}% cae -{TRAIL_DROP:.0f}% | max {MAX_HOLD_MIN:.0f}min"
     )
 
-    while mint in _auto_positions:
-        await asyncio.sleep(MONITOR_TICK)
-        if mint not in _auto_positions:
-            break
+    try:
+        while mint in _auto_positions:
+            await asyncio.sleep(MONITOR_TICK)
+            if mint not in _auto_positions:
+                break
 
-        current = await asyncio.get_running_loop().run_in_executor(
-            None, _fetch_current_price, mint, pair_address
-        )
+            current = await asyncio.get_running_loop().run_in_executor(
+                None, _fetch_current_price, mint, pair_address
+            )
 
-        if current <= 0:
-            current = _auto_positions[mint].get("last_price_usd", 0)
-        else:
-            _auto_positions[mint]["last_price_usd"] = current
+            if current <= 0:
+                current = _auto_positions[mint].get("last_price_usd", 0)
+            else:
+                _auto_positions[mint]["last_price_usd"] = current
 
-        hold_min = (time.time() - entry_time) / 60
+            hold_min = (time.time() - entry_time) / 60
 
-        if current <= 0 or entry_price <= 0:
-            if hold_min >= MAX_HOLD_MIN:
-                await _trigger_sell(mint, symbol, 0.0, f"timeout-sin-precio {hold_min:.1f}min", program)
-            continue
+            if current <= 0 or entry_price <= 0:
+                if hold_min >= MAX_HOLD_MIN:
+                    await _trigger_sell(mint, symbol, 0.0, f"timeout-sin-precio {hold_min:.1f}min", program)
+                continue
 
-        pnl_pct  = (current - entry_price) / entry_price * 100
-        peak_pct = _auto_positions[mint].get("peak_pct", 0)
+            pnl_pct  = (current - entry_price) / entry_price * 100
+            peak_pct = _auto_positions[mint].get("peak_pct", 0)
 
-        if pnl_pct > peak_pct:
-            _auto_positions[mint]["peak_pct"] = pnl_pct
-            peak_pct = pnl_pct
+            if pnl_pct > peak_pct:
+                _auto_positions[mint]["peak_pct"] = pnl_pct
+                peak_pct = pnl_pct
 
-        log.info(f"[learner] 📊 {symbol} | P&L {pnl_pct:+.1f}% | pico {peak_pct:+.1f}% | hold {hold_min:.1f}min")
+            log.info(f"[learner] 📊 {symbol} | P&L {pnl_pct:+.1f}% | pico {peak_pct:+.1f}% | hold {hold_min:.1f}min")
 
-        exit_reason = None
-        if pnl_pct <= STOP_LOSS_PCT:
-            exit_reason = f"stop-loss {pnl_pct:+.1f}%"
-        elif pnl_pct >= TAKE_PROFIT:
-            exit_reason = f"take-profit {pnl_pct:+.1f}%"
-        elif peak_pct >= TRAIL_PEAK and (peak_pct - pnl_pct) >= TRAIL_DROP:
-            exit_reason = f"trailing pico={peak_pct:+.1f}% actual={pnl_pct:+.1f}%"
-        elif hold_min >= MAX_HOLD_MIN:
-            exit_reason = f"timeout {hold_min:.1f}min"
+            exit_reason = None
+            if pnl_pct <= STOP_LOSS_PCT:
+                exit_reason = f"stop-loss {pnl_pct:+.1f}%"
+            elif pnl_pct >= TAKE_PROFIT:
+                exit_reason = f"take-profit {pnl_pct:+.1f}%"
+            elif peak_pct >= TRAIL_PEAK and (peak_pct - pnl_pct) >= TRAIL_DROP:
+                exit_reason = f"trailing pico={peak_pct:+.1f}% actual={pnl_pct:+.1f}%"
+            elif hold_min >= MAX_HOLD_MIN:
+                exit_reason = f"timeout {hold_min:.1f}min"
 
-        if exit_reason:
-            await _trigger_sell(mint, symbol, current, exit_reason, program)
-            break
+            if exit_reason:
+                await _trigger_sell(mint, symbol, current, exit_reason, program)
+                break
+    except Exception as e:
+        log.error(f"[learner] 💥 monitor de {symbol} murió: {e} — reconcile lo relanzará")
+        raise
+
+
+def _ensure_monitor(mint: str, symbol: str) -> bool:
+    """Lanza un monitor para `mint` si no hay uno vivo. True si lanzó uno nuevo."""
+    task = _monitor_tasks.get(mint)
+    if task is not None and not task.done():
+        return False
+    _monitor_tasks[mint] = asyncio.create_task(_monitor_position(mint, symbol))
+    return True
+
+
+async def _reconcile_loop():
+    """Red de seguridad: cada 60s adopta huérfanas y relanza monitores muertos.
+
+    Sin esto, un monitor que muere deja la posición sin SL/TP y el auto-close
+    del simulador (30 min) la vende al precio que sea — así se produjeron
+    pérdidas de -66% con SL configurado en -6%.
+    """
+    while True:
+        await asyncio.sleep(60)
+        try:
+            _recover_orphan_positions()
+            for mint, pos in list(_auto_positions.items()):
+                if _ensure_monitor(mint, pos.get("symbol", mint[:6])):
+                    log.warning(f"[learner] ♻️ monitor relanzado para {pos.get('symbol', mint[:6])}")
+            for mint in list(_monitor_tasks):
+                if mint not in _auto_positions and _monitor_tasks[mint].done():
+                    _monitor_tasks.pop(mint, None)
+        except Exception as e:
+            log.error(f"[learner] error en _reconcile_loop: {e}")
 
 
 async def _open_position(mint: str, token_info: dict, reason: str):
@@ -391,7 +427,7 @@ async def _open_position(mint: str, token_info: dict, reason: str):
 
     log.info(f"[learner] 🟢 COMPRA {symbol} | {reason}")
     await execute_copy(buy_swap)
-    asyncio.create_task(_monitor_position(mint, symbol))
+    _ensure_monitor(mint, symbol)
 
 
 # ── Descubrimiento ────────────────────────────────────────────────────────────
@@ -542,7 +578,9 @@ async def watch_learner_scanner():
     _recover_orphan_positions()
 
     for mint, pos in list(_auto_positions.items()):
-        asyncio.create_task(_monitor_position(mint, pos["symbol"]))
+        _ensure_monitor(mint, pos.get("symbol", mint[:6]))
+
+    asyncio.create_task(_reconcile_loop())
 
     log.info(
         f"[learner] 🤖 Learner Scanner iniciado | "
