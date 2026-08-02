@@ -4,6 +4,7 @@ Intenta en orden: PumpPortal → PumpAPI.fun → Jupiter on-chain.
 """
 
 import base64
+import os
 import httpx
 from utils.logger import get_logger
 
@@ -11,8 +12,21 @@ log = get_logger("pumpfun")
 
 PUMPPORTAL_URL = "https://pumpportal.fun/api/trade-local"
 PUMPAPI_URL    = "https://pumpapi.fun/api/trade"
-DEFAULT_SLIPPAGE = 15
-DEFAULT_PRIORITY = 0.0002
+
+# Slippage tolerado en bonding curve — antes 15% fijo (demasiado permisivo, expone
+# a sándwich/MEV). 250 bps = 2.5%, configurable por env sin tocar código.
+PUMP_SLIPPAGE_BPS = int(os.getenv("PUMP_SLIPPAGE_BPS", "250"))
+PUMP_SLIPPAGE_PCT = PUMP_SLIPPAGE_BPS / 100  # PumpPortal/PumpAPI esperan porcentaje, no bps
+
+# La priority fee real ya NO se manda por este parámetro: se inyecta como
+# instrucciones de Compute Budget reales (SetComputeUnitLimit + SetComputeUnitPrice)
+# en copytrade/executor.py, centralizado para todas las rutas de envío (Jupiter y
+# PumpPortal por igual). Se deja en 0 aquí a propósito — si mandáramos un valor >0,
+# PumpPortal podría embeber SU PROPIA instrucción de compute budget en la tx que
+# devuelve, y tener dos instrucciones de compute budget en la misma transacción
+# hace que Solana la RECHACE por completo ("compute budget instructions specified
+# multiple times"). Ver utils/jito.py y executor._sign_and_send_async().
+DEFAULT_PRIORITY = 0.0
 
 # Cliente async compartido
 _async_http = httpx.AsyncClient(timeout=4)
@@ -26,7 +40,7 @@ def get_pump_buy_tx(pubkey: str, mint: str, amount_sol: float) -> bytes | None:
 		"mint": mint,
 		"denominatedInSol": "true",
 		"amount": round(amount_sol, 6),
-		"slippage": DEFAULT_SLIPPAGE,
+		"slippage": PUMP_SLIPPAGE_PCT,
 		"priorityFee": DEFAULT_PRIORITY,
 		"pool": "pump",
 	}
@@ -41,7 +55,7 @@ def get_pump_sell_tx(pubkey: str, mint: str, amount_tokens: float, pool: str = "
 		"mint": mint,
 		"denominatedInSol": "false",
 		"amount": amount_tokens,
-		"slippage": DEFAULT_SLIPPAGE,
+		"slippage": PUMP_SLIPPAGE_PCT,
 		"priorityFee": DEFAULT_PRIORITY,
 		"pool": pool,
 	}
@@ -171,7 +185,7 @@ async def get_pump_buy_tx_async(pubkey: str, mint: str, amount_sol: float) -> by
 	payload = {
 		"publicKey": pubkey, "action": "buy", "mint": mint,
 		"denominatedInSol": "true", "amount": round(amount_sol, 6),
-		"slippage": DEFAULT_SLIPPAGE, "priorityFee": DEFAULT_PRIORITY, "pool": "pump",
+		"slippage": PUMP_SLIPPAGE_PCT, "priorityFee": DEFAULT_PRIORITY, "pool": "pump",
 	}
 	return await _multi_backend_async(payload, f"buy {amount_sol:.5f} SOL → {mint[:8]}")
 
@@ -181,7 +195,7 @@ async def get_pump_sell_tx_async(pubkey: str, mint: str, amount_tokens: float, p
 	payload = {
 		"publicKey": pubkey, "action": "sell", "mint": mint,
 		"denominatedInSol": "false", "amount": amount_tokens,
-		"slippage": DEFAULT_SLIPPAGE, "priorityFee": DEFAULT_PRIORITY, "pool": pool,
+		"slippage": PUMP_SLIPPAGE_PCT, "priorityFee": DEFAULT_PRIORITY, "pool": pool,
 	}
 	return await _multi_backend_async(payload, f"sell ({pool}) {amount_tokens} → {mint[:8]}")
 

@@ -435,7 +435,7 @@ async def watch_all():
     from utils.blockchain import detect_blockchain
     from copytrade.eth_watcher import watch_eth_wallets
     from copytrade.alchemy_webhooks import start_webhook_server, set_monitored_wallets
-    from copytrade.executor import _refresh_blockhash_loop, _refresh_balance_loop
+    from copytrade.executor import _refresh_blockhash_loop, _refresh_balance_loop, _hard_stop_loss_loop
     from config import ETH_POLL_INTERVAL
     import os
 
@@ -447,6 +447,9 @@ async def watch_all():
 
     # Background tasks: blockhash y balance siempre frescos (eliminan RPC calls del hot path)
     tasks += [_refresh_blockhash_loop(), _refresh_balance_loop()]
+
+    # Hard stop-loss: vigila PnL de posiciones abiertas y vende sin esperar a la wallet copiada
+    tasks.append(_hard_stop_loss_loop())
 
     # 3 consumers en paralelo — cada uno puede procesar un trade simultáneamente.
     # Si Theo y Cupsey compran al mismo tiempo, ambos se ejecutan sin esperar.

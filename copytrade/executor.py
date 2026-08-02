@@ -13,7 +13,9 @@ from datetime import datetime
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
-from solders.message import MessageV0, Message
+from solders.message import MessageV0, Message, MessageHeader
+from solders.instruction import CompiledInstruction
+from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 from solana.rpc.api import Client
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.types import TokenAccountOpts, TxOpts
@@ -23,13 +25,17 @@ from config import (
     PROPORTIONAL_MODE, MAX_TRADE_PCT, MIN_TRADE_SOL, MAX_OPEN_COPIES,
     STOP_LOSS_PCT, MIN_RESERVE_SOL, MAX_PRICE_IMPACT, MAX_SESSION_LOSS_PCT, SCALING_TIERS,
     TOKENS, get_max_trade_pct_by_balance,
+    HARD_STOP_LOSS_PCT, STOP_LOSS_CHECK_INTERVAL_S,
+    COMPUTE_UNIT_LIMIT, COMPUTE_UNIT_PRICE_MICROLAMPORTS, USE_JITO,
 )
 from utils.jupiter import get_quote, get_swap_transaction, calc_price_impact, out_amount
 from utils.jupiter import get_quote_async, get_swap_transaction_async
 from utils.pumpfun import get_pump_buy_tx, get_pump_sell_tx
 from utils.pumpfun import get_pump_buy_tx_async, get_pump_sell_tx_async
+from utils.dexscreener import get_best_pair_async
 from utils.logger import get_logger
 from copytrade import simulator
+import utils.jito as jito
 
 log          = get_logger("executor")
 client       = Client(RPC_HTTP)        # síncrono — solo para recover_open_positions al arrancar
@@ -77,6 +83,23 @@ _keypair_cache: "Keypair | None" = None
 # Caché de blockhash — válido ~90s, refrescado en background cada 45s
 _blockhash_cache: str | None = None
 _blockhash_cache_ts: float = 0.0
+
+COMPUTE_BUDGET_PROGRAM_ID = Pubkey.from_string("ComputeBudget111111111111111111111111111111")
+
+
+def _invalidate_balance_cache():
+    """
+    Fuerza que la próxima lectura de balance golpee el RPC en vez de servir el
+    caché de 5s (_get_sol_balance_async). BUG HISTÓRICO: antes esto se hacía con
+    una asignación suelta `_sol_balance_cache_ts = 0` DENTRO de execute_copy() sin
+    `global` — Python la trataba como variable local nueva, así que el caché real
+    nunca se invalidaba y el balance leído justo después de comprar/vender podía
+    seguir siendo el de ANTES de la TX (desfase de hasta 5s). Eso corrompía
+    sol_spent_real / sol_received_real / real_pnl_* — las métricas que miden
+    slippage y fees reales.
+    """
+    global _sol_balance_cache_ts
+    _sol_balance_cache_ts = 0
 
 
 def _load_dead_tokens():
@@ -384,6 +407,59 @@ async def calc_proportional_amount_async(swap: dict, our_balance_lamports: int) 
     return our_amount
 
 
+# ── Pre-trade checks (liquidez + price impact) ─────────────────────────────────
+# Antes vivían inline dentro de execute_copy(), condicionados a `not _fast_copy`
+# (y `not is_pumpfun_bc` en el caso de price impact) — es decir, se SALTABAN
+# justo en los trades de mayor riesgo (tokens recién nacidos en Pump.fun BC).
+# Ahora son funciones independientes que execute_copy() llama SIEMPRE, sin
+# excepción, para ningún origen de señal.
+
+async def _pre_trade_checks(token_out: str) -> tuple[bool, dict | None, float]:
+    """
+    Chequeo de liquidez mínima en DexScreener. Se corre para TODO trade, sin
+    excepción de fast-copy ni Pump.fun BC.
+
+    Si DexScreener todavía no indexó el token (normal en los primeros segundos
+    de vida) no hay forma de verificar liquidez ahí — no bloquea por falta de
+    dato, porque bloquear todo lo nuevo mataría el propósito del bot. Solo
+    bloquea cuando SÍ hay datos y la liquidez real está por debajo del mínimo.
+
+    Retorna: (paso, pair_info, liquidity_usd)
+    """
+    min_liquidity = float(os.getenv("MIN_LIQUIDITY_USD", "500"))
+    pair_info = await get_best_pair_async(token_out)
+    liquidity_usd = float((pair_info or {}).get("liquidity", {}).get("usd", 0))
+    if pair_info and liquidity_usd < min_liquidity:
+        return False, pair_info, liquidity_usd
+    return True, pair_info, liquidity_usd
+
+
+async def _check_price_impact(token_in: str, token_out: str, amount_lamports: int) -> tuple[bool, float | None]:
+    """
+    Pre-check de price impact vía quote de Jupiter. Se corre para TODO trade,
+    sin excepción de fast-copy ni Pump.fun BC — ningún trade debe ejecutarse
+    si el price impact supera config.MAX_PRICE_IMPACT.
+
+    Si Jupiter aún no tiene ruta para el token (token recién nacido, todavía sin
+    indexar) no hay quote que medir — no bloquea por falta de dato, solo bloquea
+    cuando SÍ hay quote y el impacto real supera el máximo configurado.
+
+    NOTA para quien opere el bot: esto añade una llamada a Jupiter también en el
+    camino "fast copy", que antes se diseñó explícitamente para evitarla y ganar
+    velocidad. Es la contrapartida directa de cerrar este hueco de seguridad —
+    ya no hay camino 100% libre de este chequeo.
+
+    Retorna: (paso, price_impact_pct o None si no había quote disponible)
+    """
+    quote = await get_quote_async(token_in, token_out, amount_lamports)
+    if not quote:
+        return True, None
+    impact = calc_price_impact(quote)
+    if impact > MAX_PRICE_IMPACT:
+        return False, impact
+    return True, impact
+
+
 # ── Execute ───────────────────────────────────────────────────────────────────
 
 async def execute_copy(swap: dict) -> bool:
@@ -446,31 +522,28 @@ async def execute_copy(swap: dict) -> bool:
 
         _swap_program = swap.get("program", "")
 
-        # FAST COPY: trades de PumpPortal WS de wallets objetivo — skip DexScreener y scorer.
-        # El razonamiento: si una wallet top (Theo, Cupsey-2, etc.) compra algo en Pump.fun,
-        # la señal ya fue validada por la wallet. Cada ms de latencia añadida aquí = peor precio.
+        # FAST COPY: trades de PumpPortal WS de wallets objetivo — solo salta el SCORER
+        # Groq (que necesita datos de patrones casi nunca disponibles para tokens de
+        # segundos de vida). Liquidez y Price Impact YA NO se saltan aquí — antes esta
+        # bandera también los omitía, y eran justo los trades donde más importaban.
         # Variable FAST_COPY_PUMPPORTAL (default=true) controla este comportamiento.
         _fast_copy = (
             swap.get("source") == "pumpportal"
             and os.getenv("FAST_COPY_PUMPPORTAL", "true").lower() == "true"
         )
 
-        _pair_info = None
-        _liquidity_usd = 0.0
+        # PROTECCIÓN 3: liquidez mínima en DexScreener — SIEMPRE se corre (antes se
+        # saltaba en fast-copy/Pump.fun BC, justo los trades de mayor riesgo).
+        _liq_ok, _pair_info, _liquidity_usd = await _pre_trade_checks(token_out)
+        if not _liq_ok:
+            _min_liquidity = float(os.getenv("MIN_LIQUIDITY_USD", "500"))
+            log.warning(
+                f"[{label}] Liquidez ${_liquidity_usd:.0f} < ${_min_liquidity:.0f} — "
+                f"abortando para evitar slippage extremo"
+            )
+            return False
 
         if not _fast_copy:
-            # PROTECCIÓN 3: Verificar liquidez mínima en DexScreener (solo en modo normal)
-            _min_liquidity = float(os.getenv("MIN_LIQUIDITY_USD", "500"))
-            from utils.dexscreener import get_best_pair_async
-            _pair_info = await get_best_pair_async(token_out)
-            _liquidity_usd = float((_pair_info or {}).get("liquidity", {}).get("usd", 0))
-            if _pair_info and _liquidity_usd < _min_liquidity:
-                log.warning(
-                    f"[{label}] Liquidez ${_liquidity_usd:.0f} < ${_min_liquidity:.0f} — "
-                    f"abortando para evitar slippage extremo"
-                )
-                return False
-
             # SCORER: Evaluar token contra patrones Groq aprendidos de historial
             _use_scorer = os.getenv("USE_GROQ_SCORER", "true").lower() == "true"
             if _use_scorer:
@@ -499,7 +572,7 @@ async def execute_copy(swap: dict) -> bool:
                     log.info(f"[{label}] Ignorando {swap['symbol_out']} en Pump.fun BC (AMM filter)")
                     return False
         else:
-            log.info(f"[{label}] ⚡ FAST COPY {swap['symbol_out']} — skip DexScreener/scorer")
+            log.info(f"[{label}] ⚡ FAST COPY {swap['symbol_out']} — skip scorer (liquidez/price-impact SÍ se validan)")
 
         our_balance = await _get_sol_balance_async()
         if our_balance == 0:
@@ -556,17 +629,19 @@ async def execute_copy(swap: dict) -> bool:
             f"Balance: {our_balance / LAMPORTS_PER_SOL:.3f} SOL"
         )
 
-        # PROTECCIÓN 2: Pre-check de price impact ANTES de enviar TX (evita TX que van a fallar)
-        # Skip en fast copy (token recién salido, Jupiter aún no lo conoce) y en Pump.fun BC.
+        # PROTECCIÓN 2: Pre-check de price impact ANTES de enviar TX (evita TX que van a fallar).
+        # SIEMPRE se corre, incluso en fast-copy y Pump.fun BC (antes se saltaba ahí).
+        # Si Jupiter todavía no tiene ruta para el token (común en los primeros segundos
+        # de un token nuevo), no hay quote que medir — no bloquea por falta de dato,
+        # solo bloquea cuando SÍ hay quote y el impacto supera MAX_PRICE_IMPACT.
         is_pumpfun_bc  = swap.get("program") == "Pump.fun"
-        if not _fast_copy and not is_pumpfun_bc:
-            _pre_quote = await get_quote_async(swap["token_in"], token_out, amount_lamports)
-            if _pre_quote and calc_price_impact(_pre_quote) > MAX_PRICE_IMPACT:
-                log.warning(
-                    f"[{label}] Price impact {calc_price_impact(_pre_quote):.2f}% > {MAX_PRICE_IMPACT}% — "
-                    f"abortando para evitar TX fallida con pérdida de fees"
-                )
-                return False
+        _impact_ok, _impact_pct = await _check_price_impact(swap["token_in"], token_out, amount_lamports)
+        if not _impact_ok:
+            log.warning(
+                f"[{label}] Price impact {_impact_pct:.2f}% > {MAX_PRICE_IMPACT}% — "
+                f"abortando para evitar TX fallida con pérdida de fees"
+            )
+            return False
         is_pumpswap    = swap.get("program") == "PumpSwap"
 
         # DRIFT: balance justo antes de ejecutar y timestamp de inicio
@@ -591,7 +666,7 @@ async def execute_copy(swap: dict) -> bool:
             return False
 
         # DRIFT: balance justo después — diferencia = SOL real gastado (incluye fees de red)
-        _sol_balance_cache_ts = 0  # invalidar caché tras TX
+        _invalidate_balance_cache()
         _bal_after_buy   = await _get_sol_balance_async()
         _sol_spent_real  = (_bal_before_buy - _bal_after_buy) / LAMPORTS_PER_SOL
         _buy_latency_ms  = (time.time() - _buy_started_at) * 1000
@@ -600,11 +675,18 @@ async def execute_copy(swap: dict) -> bool:
             "symbol":          swap["symbol_out"],
             "opened":          time.time(),
             "program":         swap.get("program", ""),
+            "wallet":          swap.get("wallet", ""),
             # métricas drift
             "sol_spent_real":  _sol_spent_real,
             "buy_latency_ms":  _buy_latency_ms,
             "wallet_label":    label,
+            # se completa en background — ver _fill_entry_price(); mientras sea
+            # None, el hard stop-loss no vigila esta posición todavía.
+            "entry_price_usd": None,
         }
+        # No bloquea el hot path: la TX de compra ya salió, esto solo habilita
+        # el monitoreo de stop-loss en cuanto haya un precio disponible.
+        asyncio.create_task(_fill_entry_price(token_out, swap))
         _append_copytrade({
             "timestamp":      time.time(),
             "time_str":       datetime.now().strftime("%H:%M:%S %d/%m"),
@@ -685,7 +767,7 @@ async def execute_copy(swap: dict) -> bool:
             return False
 
         # DRIFT: balance antes de la venta (invalidar caché para leer valor real)
-        _sol_balance_cache_ts = 0
+        _invalidate_balance_cache()
         _bal_before_sell = await _get_sol_balance_async()
 
         pos = _open_copies.pop(token_in, {})
@@ -800,8 +882,92 @@ async def _send_pumpfun_sell_async(mint: str, ui_amount: float, keypair: Keypair
     return await _sign_and_send_async(tx_bytes, keypair, f"PumpPortal sell [{pool}] {mint[:8]}")
 
 
+def _prepend_compute_budget(message: MessageV0) -> MessageV0:
+    """
+    Antepone SetComputeUnitLimit + SetComputeUnitPrice a un MessageV0 ya construido
+    por Jupiter o PumpPortal, fijando una priority fee real y precisa (en vez de
+    depender del parámetro opaco de cada proveedor — ver utils/pumpfun.py).
+
+    Es seguro anexar el programa ComputeBudget111... al FINAL de account_keys si no
+    está ya presente: estas dos instrucciones no referencian ninguna cuenta
+    (accounts vacío), y una cuenta nueva readonly-no-signer anexada al final solo
+    EXTIENDE el bloque final de cuentas readonly-no-signer que exige el formato de
+    Solana (signers-writable, signers-readonly, non-signers-writable,
+    non-signers-readonly) — no lo desordena. Los índices de las instrucciones ya
+    existentes no cambian porque no se inserta nada en medio del arreglo.
+    Validado offline (construcción + firma + re-parseo) contra solders 0.27.1
+    antes de integrarlo — no se probó contra el Block Engine ni el RPC en vivo.
+    """
+    account_keys = list(message.account_keys)
+    header = message.header
+    new_readonly = 0
+
+    limit_ix = set_compute_unit_limit(COMPUTE_UNIT_LIMIT)
+    price_ix = set_compute_unit_price(COMPUTE_UNIT_PRICE_MICROLAMPORTS)
+
+    compiled = []
+    for ix in (limit_ix, price_ix):
+        if ix.program_id in account_keys:
+            idx = account_keys.index(ix.program_id)
+        else:
+            account_keys.append(ix.program_id)
+            idx = len(account_keys) - 1
+            new_readonly += 1
+        compiled.append(CompiledInstruction(program_id_index=idx, accounts=bytes(), data=bytes(ix.data)))
+
+    new_header = MessageHeader(
+        num_required_signatures=header.num_required_signatures,
+        num_readonly_signed_accounts=header.num_readonly_signed_accounts,
+        num_readonly_unsigned_accounts=header.num_readonly_unsigned_accounts + new_readonly,
+    )
+    return MessageV0(
+        header=new_header,
+        account_keys=account_keys,
+        recent_blockhash=message.recent_blockhash,
+        instructions=compiled + list(message.instructions),
+        address_table_lookups=list(message.address_table_lookups),
+    )
+
+
+def _build_signed_tip_tx(keypair: Keypair, blockhash) -> bytes:
+    """
+    Construye y firma una transacción de propina Jito STANDALONE — separada de la
+    tx del swap a propósito. Inyectar la propina dentro de la misma tx del swap
+    requeriría insertar una cuenta writable en medio de account_keys y recalcular
+    a mano los índices de TODAS las instrucciones ajenas que trae Jupiter/PumpPortal
+    (que además puede traer Address Lookup Tables) — mucho más riesgoso que mandar
+    una segunda tx minúscula y 100% propia dentro del mismo bundle.
+    """
+    tip_ix = jito.get_jito_tip_instruction(keypair.pubkey())
+    # tip_ix.accounts = [payer(signer,writable), tip_account(writable)] — system_program::transfer
+    account_keys = [keypair.pubkey(), tip_ix.accounts[1].pubkey, tip_ix.program_id]
+    header = MessageHeader(
+        num_required_signatures=1,
+        num_readonly_signed_accounts=0,
+        num_readonly_unsigned_accounts=1,  # solo el System Program
+    )
+    compiled = CompiledInstruction(program_id_index=2, accounts=bytes([0, 1]), data=bytes(tip_ix.data))
+    msg = MessageV0(
+        header=header,
+        account_keys=account_keys,
+        recent_blockhash=blockhash,
+        instructions=[compiled],
+        address_table_lookups=[],
+    )
+    return bytes(VersionedTransaction(msg, [keypair]))
+
+
 async def _sign_and_send_async(tx_bytes: bytes, keypair: Keypair, desc: str) -> str | None:
-    """Firma y envía TX usando RPC async. Retorna signature sin esperar confirmación."""
+    """
+    Firma y envía TX usando RPC async. Retorna signature sin esperar confirmación.
+
+    Antes de firmar, inyecta Compute Budget (priority fee real, ver config.py) y,
+    si USE_JITO está activo, envía la TX junto con una propina como bundle al
+    Block Engine de Jito (protección MEV + prioridad de inclusión) en vez de
+    mandarla directo al RPC público. Si Jito falla, no está disponible, o
+    USE_JITO=false, cae automáticamente al broadcast normal — nunca se pierde un
+    trade solo porque Jito esté caído.
+    """
     global _blockhash_cache, _blockhash_cache_ts
     try:
         tx = VersionedTransaction.from_bytes(tx_bytes)
@@ -824,10 +990,27 @@ async def _sign_and_send_async(tx_bytes: bytes, keypair: Keypair, desc: str) -> 
                 instructions=list(msg.instructions),
                 address_table_lookups=list(msg.address_table_lookups),
             )
-        else:
-            new_msg = Message.new_with_blockhash(msg.instructions, keypair.pubkey(), fresh_bh)
+            new_msg = _prepend_compute_budget(new_msg)
+            tx_signed = VersionedTransaction(new_msg, [keypair])
 
-        tx_signed = VersionedTransaction(new_msg, [keypair])
+            if USE_JITO:
+                try:
+                    tip_tx_bytes = _build_signed_tip_tx(keypair, fresh_bh)
+                    bundle_id = await jito.send_jito_bundle([bytes(tx_signed), tip_tx_bytes])
+                    if bundle_id:
+                        sig_str = str(tx_signed.signatures[0])
+                        log.debug(f"[{desc}] Enviado vía Jito bundle {bundle_id[:16]}... — sig: {sig_str[:20]}...")
+                        return sig_str
+                    log.debug(f"[{desc}] Jito no aceptó el bundle — fallback a RPC público")
+                except Exception as e:
+                    log.debug(f"[{desc}] Error enviando por Jito, fallback a RPC público: {e}")
+        else:
+            # Camino legacy (Message, no MessageV0) — raro en la práctica (Jupiter v6
+            # y PumpPortal devuelven MessageV0). No se le inyecta Compute Budget ni
+            # Jito por ahora; se firma y envía como antes, por RPC público.
+            new_msg = Message.new_with_blockhash(msg.instructions, keypair.pubkey(), fresh_bh)
+            tx_signed = VersionedTransaction(new_msg, [keypair])
+
         resp = await _async_rpc.send_raw_transaction(
             bytes(tx_signed),
             opts=TxOpts(skip_preflight=True, preflight_commitment="confirmed"),
@@ -865,6 +1048,118 @@ async def _refresh_balance_loop():
         except Exception as e:
             log.debug(f"[balance refresh] {e}")
         await asyncio.sleep(4)
+
+
+# ── Hard Stop-Loss de emergencia ────────────────────────────────────────────────
+# Protección de capital INDEPENDIENTE de la wallet copiada: hasta ahora la única
+# salida era el espejo (vender solo cuando la wallet objetivo vende). Si la wallet
+# tarda en salir, no vende nunca, o se pierde la señal por una caída del
+# WebSocket, la posición quedaba abierta sin ningún control de riesgo propio.
+
+async def _fill_entry_price(token_mint: str, swap: dict):
+    """
+    Completa entry_price_usd en background — no bloquea el hot path de compra
+    (la TX de compra ya salió antes de que esto se dispare).
+
+    Prioridad de precio: DexScreener (precio real de mercado) → precio implícito
+    del swap (PumpPortal, cuando DexScreener aún no indexó el token) → sin precio.
+    Si no se consigue ninguno, la posición simplemente no queda vigilada por el
+    hard stop-loss hasta que haya un precio disponible (se reintenta solo no,
+    pero el próximo tick del loop puede recibir una posición ya rellenada si
+    otro punto del código actualiza el precio más tarde).
+    """
+    price_usd = None
+    try:
+        pair = await get_best_pair_async(token_mint)
+        if pair and pair.get("priceUsd"):
+            price_usd = float(pair["priceUsd"])
+    except Exception as e:
+        log.debug(f"[STOP-LOSS] Sin precio DexScreener para entrada de {token_mint[:8]}...: {e}")
+
+    if not price_usd and swap.get("implied_price_sol", 0) > 0:
+        try:
+            price_usd = swap["implied_price_sol"] * await _get_sol_price_usd_async()
+        except Exception:
+            price_usd = None
+
+    pos = _open_copies.get(token_mint)
+    if pos is not None and price_usd:
+        pos["entry_price_usd"] = price_usd
+        log.debug(f"[STOP-LOSS] Precio de entrada registrado para {pos.get('symbol','?')}: ${price_usd:.8f}")
+
+
+def _check_stop_loss(entry_price: float, current_price: float, threshold_pct: float) -> bool:
+    """
+    True si el precio cayó threshold_pct% o más desde entry_price.
+    Función pura — sin I/O — para poder testearla sin red ni asyncio.
+    """
+    if entry_price <= 0 or current_price <= 0:
+        return False
+    pnl_pct = (current_price - entry_price) / entry_price * 100
+    return pnl_pct <= -abs(threshold_pct)
+
+
+async def _hard_stop_loss_loop():
+    """
+    Vigila el PnL de cada posición abierta cada STOP_LOSS_CHECK_INTERVAL_S
+    segundos. Si una posición cae HARD_STOP_LOSS_PCT% o más desde su precio de
+    entrada, la vende de inmediato SIN esperar señal de venta de la wallet
+    copiada — última línea de defensa de capital.
+    """
+    if not WALLET_PUBKEY:
+        return
+    while True:
+        await asyncio.sleep(STOP_LOSS_CHECK_INTERVAL_S)
+        try:
+            # snapshot: _open_copies puede mutar mientras hacemos await más abajo
+            for token_mint, pos in list(_open_copies.items()):
+                if pos.get("recovered"):
+                    continue
+                entry_price = pos.get("entry_price_usd")
+                if not entry_price:
+                    continue
+
+                try:
+                    pair = await get_best_pair_async(token_mint)
+                except Exception as e:
+                    log.debug(f"[STOP-LOSS] Error consultando precio de {pos.get('symbol','?')}: {e}")
+                    continue
+                current_price = float((pair or {}).get("priceUsd") or 0)
+                if current_price <= 0:
+                    continue
+
+                if not _check_stop_loss(entry_price, current_price, HARD_STOP_LOSS_PCT):
+                    continue
+
+                # Puede que ya se haya vendido (espejo) entre el snapshot y ahora
+                if token_mint not in _open_copies:
+                    continue
+
+                pnl_pct = (current_price - entry_price) / entry_price * 100
+                label   = pos.get("wallet_label", "?")
+                symbol  = pos.get("symbol", token_mint[:6])
+                log.warning(
+                    f"🚨 [HARD STOP-LOSS] {symbol} cayó {pnl_pct:.1f}% "
+                    f"(umbral -{HARD_STOP_LOSS_PCT:.0f}%) — vendiendo de inmediato, "
+                    f"sin esperar a {label}"
+                )
+                sell_swap = {
+                    "wallet":       pos.get("wallet", "STOP_LOSS"),
+                    "wallet_label": f"{label} [STOP-LOSS]",
+                    "program":      pos.get("program", ""),
+                    "token_in":     token_mint,
+                    "token_out":    SOL_MINT,
+                    "symbol_in":    symbol,
+                    "symbol_out":   "SOL",
+                    "amount_in":    0,
+                    "amount_out":   0,
+                }
+                try:
+                    await execute_copy(sell_swap)
+                except Exception as e:
+                    log.error(f"[HARD STOP-LOSS] Error vendiendo {symbol}: {e}")
+        except Exception as e:
+            log.error(f"[HARD STOP-LOSS] Error en el loop de vigilancia: {e}")
 
 
 # ── Envío sync (solo para recover_open_positions al arrancar) ─────────────────

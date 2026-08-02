@@ -130,6 +130,28 @@ MIN_RESERVE_SOL = float(os.getenv("MIN_RESERVE_SOL", "0.01"))
 # Price impact máximo aceptable. Sobre este % se aborta el trade.
 MAX_PRICE_IMPACT = float(os.getenv("MAX_PRICE_IMPACT", "2.0"))
 
+# --- Hard Stop-Loss de emergencia (independiente de la wallet copiada) ---
+# Si una posición cae este % desde el precio de entrada, el bot vende de inmediato
+# sin esperar señal de venta de la wallet objetivo (protección propia de capital).
+HARD_STOP_LOSS_PCT = float(os.getenv("HARD_STOP_LOSS_PCT", "15.0"))
+# Cada cuántos segundos se revisa el precio de las posiciones abiertas.
+STOP_LOSS_CHECK_INTERVAL_S = float(os.getenv("STOP_LOSS_CHECK_INTERVAL_S", "5.0"))
+
+# --- Compute Budget (priority fee real vía instrucciones on-chain) ---
+# Se inyectan SetComputeUnitLimit + SetComputeUnitPrice en cada TX de compra/venta,
+# calculados para que la priority fee total sea COMPUTE_UNIT_PRICE_TARGET_LAMPORTS.
+COMPUTE_UNIT_LIMIT = int(os.getenv("COMPUTE_UNIT_LIMIT", "200000"))
+COMPUTE_UNIT_PRICE_TARGET_LAMPORTS = int(os.getenv("COMPUTE_UNIT_PRICE_TARGET_LAMPORTS", "500000"))  # ~0.0005 SOL
+# micro-lamports por CU necesarios para llegar al target de arriba con el límite de arriba.
+COMPUTE_UNIT_PRICE_MICROLAMPORTS = int(
+    COMPUTE_UNIT_PRICE_TARGET_LAMPORTS * 1_000_000 / COMPUTE_UNIT_LIMIT
+) if COMPUTE_UNIT_LIMIT else 0
+
+# --- Jito Block Engine (protección MEV / envío prioritario) ---
+# Si falla el envío por Jito, se cae automáticamente al RPC público (nunca se
+# pierde un trade solo porque Jito esté caído).
+USE_JITO = os.getenv("USE_JITO", "true").lower() == "true"
+
 # Escalado progresivo del tamaño de trade según ganancia acumulada.
 # Cuando el balance supera cada umbral respecto al capital inicial,
 # el % máximo por trade sube — usando ganancias, no el capital base.
