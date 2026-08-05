@@ -169,8 +169,27 @@ def score_token(wallet_label: str, token_info: dict, entry_context: dict | None 
     return (score, passed, reason)
 
 
-def should_copy(wallet_label: str, token_info: dict, entry_context: dict | None = None) -> tuple[bool, str]:
-    """Interfaz simplificada: True si debe copiarse."""
+def should_copy(
+    wallet_label: str,
+    token_info: dict,
+    entry_context: dict | None = None,
+    token_mint: str | None = None,
+) -> tuple[bool, str]:
+    """Interfaz simplificada: True si debe copiarse.
+
+    `token_mint` es opcional: solo se usa para el shadow-mode de ROOT (para
+    que, si ROOT dice COPIAR, pueda simular la compra de ese token en
+    root_sim.py). Si no se pasa, el shadow-mode sigue comparando decisiones
+    igual, solo no simula trades."""
     score, passed, reason = score_token(wallet_label, token_info, entry_context=entry_context)
     log.info(f"[scorer] {wallet_label} → score={score} {'✅ COPIAR' if passed else '❌ SKIP'} | {reason}")
+
+    # Shadow-mode: le preguntamos a ROOT qué hubiera decidido, solo para
+    # registrar y comparar — NUNCA cambia `passed`. Ver copytrade/root_shadow.py.
+    try:
+        from copytrade.root_shadow import shadow_score
+        shadow_score(wallet_label, entry_context, score, passed, token_mint=token_mint)
+    except Exception as e:
+        log.debug(f"[scorer] shadow-mode de ROOT no disponible: {e}")
+
     return passed, f"score={score} | {reason}"

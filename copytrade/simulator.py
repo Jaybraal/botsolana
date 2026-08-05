@@ -461,7 +461,7 @@ def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
                 "buys_5m":        None,
                 "program":        program,
             }
-            passed, reason = should_copy(label, token_info, entry_context=entry_context)
+            passed, reason = should_copy(label, token_info, entry_context=entry_context, token_mint=token_mint)
             if passed:
                 _scorer_accepted += 1
                 log.info(f"[SIM] 🤖 SCORER ✅ | [cyan]{label}[/] → [yellow]{symbol}[/] | {reason}")

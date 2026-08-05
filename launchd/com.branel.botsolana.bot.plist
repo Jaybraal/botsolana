@@ -9,14 +9,14 @@
         <string>/usr/local/bin/run-botsolana</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/branel/Desktop/botsolana</string>
+    <string>/Users/branel/Proyectos/botsolana</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/branel/Desktop/botsolana/logs/launchd_bot.log</string>
+    <string>/Users/branel/Proyectos/botsolana/logs/launchd_bot.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/branel/Desktop/botsolana/logs/launchd_bot.log</string>
+    <string>/Users/branel/Proyectos/botsolana/logs/launchd_bot.log</string>
 </dict>
 </plist>

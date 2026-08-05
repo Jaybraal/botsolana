@@ -561,7 +561,7 @@ async def execute_copy(swap: dict) -> bool:
                     "buys_5m":         int((((_pair_info or {}).get("txns") or {}).get("m5") or {}).get("buys") or 0),
                     "sells_5m":        int((((_pair_info or {}).get("txns") or {}).get("m5") or {}).get("sells") or 0),
                 }
-                _score_pass, _score_reason = should_copy(label, _token_info)
+                _score_pass, _score_reason = should_copy(label, _token_info, token_mint=token_out)
                 if not _score_pass:
                     log.info(f"[{label}] ❌ Scorer rechazó {swap['symbol_out']} — {_score_reason}")
                     return False

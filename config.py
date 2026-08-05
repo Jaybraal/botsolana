@@ -44,6 +44,16 @@ WALLET_LABELS: dict[str, str] = {
     "4BdKaxN8G6ka4GYtQQWk4G4dZRUTX2vQH9GcXdBREFUk": "Cupsey-2",
     "0xdc6b9d500d26ac3dd43f783f4ada4d6c37205232": "ETH-Wallet-1",
     "0xb3b088d37f03f82e8caaf019191dbaab6bf9d6cd": "ETH-Wallet-2",
+    # Candidatas nuevas 2026-08-03 (ver docs/superpowers/specs/2026-08-03-nuevas-wallets-copytrade-candidatas.md)
+    # En fase SIM — no están en ELITE_WALLETS ni WALLET_WEIGHTS hasta graduarse.
+    "DYAn4XpAkN5mhiXkRB7dGq4Jadnx6XYgu8L5b3WGhbrt": "The Doc",
+    "9jyqFiLnruggwNn4EQwBNFXwpbLM9hrA4hV59ytyAVVz": "Nach",
+    "8rvAsDKeAcEjEkiZMug9k8v1y8mW6gQQiMobd89Uy7qR": "Casino",
+    "GJA1HEbxGnqBhBifH9uQauzXSB53to5rhDrzmKxhSU65": "Latuche",
+    "5B52w1ZW9tuwUduueP5J7HXz5AcGfruGoX6YoAudvyxG": "Yenni",
+    "ETU3GyrUsv6UztQJxHgsBX2UoJFmq79WJe3JyDpAqGMz": "MACXBT",
+    "8MaVa9kdt3NW4Q5HyNAm1X5LbR8PQRVDc1W8NMVK88D5": "Daumen",
+    "CEUA7zVoDRqRYoeHTP58UHU6TR8yvtVbeLrX1dppqoXJ": "Tom",
 }
 
 # Wallets con WR real > 84% (excluyen RC 0% y Trey 48.6%)
