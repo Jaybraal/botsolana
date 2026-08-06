@@ -227,6 +227,9 @@ def main():
     if WALLET_PUBKEY:
         recover_open_positions()
 
+    from copytrade.root_evolution import start as start_root_evolution
+    start_root_evolution()
+
     console.print(Rule("[dim]Conectando WebSocket...[/]", style="bright_black"))
     console.print()
 
