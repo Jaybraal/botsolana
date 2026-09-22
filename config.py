@@ -7,6 +7,8 @@ RPC_HTTP = os.getenv("SOLANA_RPC_HTTP", "https://api.mainnet-beta.solana.com")
 RPC_WS   = os.getenv("SOLANA_RPC_WS",  "wss://api.mainnet-beta.solana.com")
 # Fallback WS cuando el primario devuelve 429 (ej: cuota Helius agotada)
 RPC_WS_FALLBACK = os.getenv("SOLANA_RPC_WS_FALLBACK", "wss://api.mainnet-beta.solana.com")
+# Fallback HTTP para getTransaction cuando el primario devuelve 429 (ej: cuota Helius agotada)
+RPC_HTTP_FALLBACK = os.getenv("SOLANA_RPC_HTTP_FALLBACK", "https://api.mainnet-beta.solana.com")
 
 # --- RPC Ethereum ---
 ETH_RPC_HTTP = os.getenv("ETH_RPC_HTTP", "https://eth.llamarpc.com")
@@ -18,8 +20,9 @@ ETH_POLL_INTERVAL = int(os.getenv("ETH_POLL_INTERVAL", "3"))  # 3s mínimo sin r
 WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8000"))
 
 # --- Modo live/simulación ---
-# Poner LIVE_MODE=false en Railway para pausar trading real sin borrar las keys.
-_LIVE_MODE = os.getenv("LIVE_MODE", "true").lower() == "true"
+# El modo real debe requerir una decisión explícita en el entorno de despliegue.
+# Un clon local, un reinicio sin variables o una prueba nunca deben operar fondos.
+_LIVE_MODE = os.getenv("LIVE_MODE", "false").lower() == "true"
 
 # --- Tu wallet ---
 WALLET_PUBKEY     = os.getenv("WALLET_PUBKEY", "") if _LIVE_MODE else ""
@@ -89,39 +92,38 @@ PROPORTIONAL_MODE = os.getenv("PROPORTIONAL_MODE", "true").lower() == "true"
 
 # Tope máximo: basado en balance actual (risk management).
 # Tabla dinámica según rango del balance en USD:
-# - $50–$200: 10% por trade (reducido tras pérdidas live con 25%)
-# - $200–$1k: 12% por trade
-# - $1k–$5k: 7% por trade
-# - $5k+:    3% por trade
+# Estos topes se combinan con MAX_TRADE_PCT. El valor más bajo gana.
 RISK_TIERS: list[tuple[float, float]] = [
-    (50, 0.10),      # $50-$200: 10%
-    (200, 0.12),     # $200-$1k: 12%
-    (1000, 0.07),    # $1k-$5k: 7%
+    (50, 0.05),      # $50-$200: 5%
+    (200, 0.05),     # $200-$1k: 5%
+    (1000, 0.03),    # $1k-$5k: 3%
     (float('inf'), 0.03),  # $5k+: 3%
 ]
+ABSOLUTE_MAX_TRADE_PCT = 0.02
 
 def get_max_trade_pct_by_balance(balance_usd: float) -> float:
     """Retorna el % máximo por trade según el balance en USD."""
     if balance_usd >= 5000:
-        return 0.03    # $5k+: 3%
+        tier = 0.03
     elif balance_usd >= 1000:
-        return 0.07    # $1k–$5k: 7%
+        tier = 0.03
     elif balance_usd >= 200:
-        return 0.12    # $200–$1k: 12%
+        tier = 0.05
     else:
-        return 0.10    # $50–$200: 10% (reducido para limitar pérdida por trade)
+        tier = 0.05
+    return min(tier, float(os.getenv("MAX_TRADE_PCT", "0.02")), ABSOLUTE_MAX_TRADE_PCT)
 
 # Fallback para compatibilidad — se usa si no hay balance calculado
 # AJUSTADO A 3.5% para viabilidad con weighted allocation
 # Con ponderación: efectivo = 0.5-2.8% según wallet (vs 3.5%)
-MAX_TRADE_PCT  = float(os.getenv("MAX_TRADE_PCT",  "0.035"))  # 3.5% máximo por trade
+MAX_TRADE_PCT  = float(os.getenv("MAX_TRADE_PCT",  "0.02"))  # 2% máximo por trade
 
 # Mínimo en lamports por trade (evita trades de polvo que no cubren las fees).
 MIN_TRADE_SOL  = float(os.getenv("MIN_TRADE_SOL",  "0.005"))  # en SOL
 
 # Máximo de posiciones abiertas simultáneamente.
-# Sin límite — se abren y cierren todas las que se puedan en paralelo.
-MAX_OPEN_COPIES = int(os.getenv("MAX_OPEN_COPIES", "999"))
+# Limita exposición agregada y evita que varios consumers gasten el mismo balance cacheado.
+MAX_OPEN_COPIES = min(int(os.getenv("MAX_OPEN_COPIES", "3")), 3)
 
 # --- Protección de capital ---
 # Si el balance cae por debajo de este % del capital inicial, el bot deja de operar.
@@ -131,19 +133,19 @@ STOP_LOSS_PCT   = float(os.getenv("STOP_LOSS_PCT",  "0.70"))
 # Pérdida máxima en la sesión actual — circuit breaker de seguridad.
 # Si el balance cae más de este % desde el primer trade, todos los trades se detienen automáticamente.
 # 0.20 = parar si perdemos >20% en la sesión actual.
-MAX_SESSION_LOSS_PCT = float(os.getenv("MAX_SESSION_LOSS_PCT", "0.20"))
+MAX_SESSION_LOSS_PCT = min(float(os.getenv("MAX_SESSION_LOSS_PCT", "0.08")), 0.08)
 
 # Reserva mínima de SOL que nunca se toca (para pagar fees de red).
 # 0.01 SOL ≈ $1.50 — cubre ~100 transacciones de Solana.
 MIN_RESERVE_SOL = float(os.getenv("MIN_RESERVE_SOL", "0.01"))
 
 # Price impact máximo aceptable. Sobre este % se aborta el trade.
-MAX_PRICE_IMPACT = float(os.getenv("MAX_PRICE_IMPACT", "2.0"))
+MAX_PRICE_IMPACT = min(float(os.getenv("MAX_PRICE_IMPACT", "1.0")), 1.0)
 
 # --- Hard Stop-Loss de emergencia (independiente de la wallet copiada) ---
 # Si una posición cae este % desde el precio de entrada, el bot vende de inmediato
 # sin esperar señal de venta de la wallet objetivo (protección propia de capital).
-HARD_STOP_LOSS_PCT = float(os.getenv("HARD_STOP_LOSS_PCT", "15.0"))
+HARD_STOP_LOSS_PCT = min(float(os.getenv("HARD_STOP_LOSS_PCT", "12.0")), 12.0)
 # Cada cuántos segundos se revisa el precio de las posiciones abiertas.
 STOP_LOSS_CHECK_INTERVAL_S = float(os.getenv("STOP_LOSS_CHECK_INTERVAL_S", "5.0"))
 

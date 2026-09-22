@@ -6,6 +6,7 @@ from solders.message import MessageHeader, MessageV0
 from solders.transaction import VersionedTransaction
 
 import copytrade.executor as executor
+import config
 
 
 # ── _check_stop_loss (función pura) ─────────────────────────────────────────
@@ -31,6 +32,32 @@ def test_stop_loss_dispara_con_caida_mayor():
 def test_stop_loss_ignora_precios_invalidos():
     assert executor._check_stop_loss(entry_price=0, current_price=0.5, threshold_pct=15.0) is False
     assert executor._check_stop_loss(entry_price=1.0, current_price=0, threshold_pct=15.0) is False
+
+
+def test_risk_cap_no_permite_superar_dos_por_ciento(monkeypatch):
+    """Una variable de entorno antigua no debe reabrir el riesgo de 5-25%."""
+    monkeypatch.setenv("MAX_TRADE_PCT", "0.25")
+    assert config.get_max_trade_pct_by_balance(100.0) == 0.02
+
+
+async def _no_pair(_token: str):
+    return None
+
+
+async def _no_quote(*_args):
+    return None
+
+
+def test_pretrade_falla_cerrado_si_no_hay_liquidez_verificable(monkeypatch):
+    monkeypatch.setattr(executor, "get_best_pair_async", _no_pair)
+    passed, pair, liquidity = __import__("asyncio").run(executor._pre_trade_checks("mint"))
+    assert (passed, pair, liquidity) == (False, None, 0.0)
+
+
+def test_pretrade_falla_cerrado_si_no_hay_ruta_de_salida(monkeypatch):
+    monkeypatch.setattr(executor, "get_quote_async", _no_quote)
+    passed, impact = __import__("asyncio").run(executor._check_price_impact("SOL", "mint", 1))
+    assert (passed, impact) == (False, None)
 
 
 # ── _prepend_compute_budget ──────────────────────────────────────────────────

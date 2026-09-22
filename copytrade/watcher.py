@@ -20,7 +20,7 @@ import random
 from datetime import datetime
 
 from config import (
-    RPC_HTTP, RPC_WS, RPC_WS_FALLBACK, TARGET_WALLETS,
+    RPC_HTTP, RPC_HTTP_FALLBACK, RPC_WS, RPC_WS_FALLBACK, TARGET_WALLETS,
     WALLET_LABELS, TOKENS, ELITE_WALLETS, SNIPE_MODE,
 )
 from copytrade.decoder import detect_swap
@@ -61,25 +61,46 @@ _rpc_client = httpx.AsyncClient(timeout=10)
 
 
 async def fetch_transaction_async(sig: str) -> dict | None:
-    """getTransaction async — no bloquea el event loop durante el RPC call."""
-    try:
-        r = await _rpc_client.post(RPC_HTTP, json={
-            "jsonrpc": "2.0",
-            "id":      1,
-            "method":  "getTransaction",
-            "params":  [
-                sig,
-                {
-                    "encoding":                       "json",
-                    "maxSupportedTransactionVersion": 0,
-                    "commitment":                     "confirmed",
-                }
-            ]
-        })
-        return r.json().get("result")
-    except Exception as e:
-        log.error(f"Error fetching tx {sig[:12]}...: {e}")
-        return None
+    """getTransaction async — no bloquea el event loop durante el RPC call.
+
+    Si el RPC primario devuelve 429 (ej: cuota Helius agotada), reintenta una
+    vez contra RPC_HTTP_FALLBACK antes de rendirse — igual que el fallback que
+    ya existe para el WebSocket en watch().
+    """
+    payload = {
+        "jsonrpc": "2.0",
+        "id":      1,
+        "method":  "getTransaction",
+        "params":  [
+            sig,
+            {
+                "encoding":                       "json",
+                "maxSupportedTransactionVersion": 0,
+                "commitment":                     "confirmed",
+            }
+        ]
+    }
+    for url in (RPC_HTTP, RPC_HTTP_FALLBACK):
+        try:
+            r = await _rpc_client.post(url, json=payload)
+        except Exception as e:
+            log.error(f"[RPC] Error de red obteniendo tx {sig[:12]}... en {url[:40]}...: {e}")
+            continue
+
+        if r.status_code == 429:
+            log.warning(f"[RPC] 429 (cuota agotada) en {url[:40]}... para tx {sig[:12]}...")
+            continue
+        if r.status_code != 200:
+            log.error(f"[RPC] HTTP {r.status_code} obteniendo tx {sig[:12]}... en {url[:40]}...: {r.text[:80]}")
+            continue
+
+        try:
+            return r.json().get("result")
+        except Exception as e:
+            log.error(f"[RPC] Respuesta no-JSON obteniendo tx {sig[:12]}... en {url[:40]}...: {e}")
+            continue
+
+    return None
 
 
 # Control de deduplicación: no copiar la misma sig dos veces

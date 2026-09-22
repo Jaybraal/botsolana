@@ -26,9 +26,9 @@ from utils.logger import get_logger
 
 # Scorer: misma lógica que en live mode
 _USE_SCORER = os.getenv("USE_GROQ_SCORER", "true").strip().lower() == "true"
-# En SIM, el scorer solo observa y loguea — nunca bloquea trades.
-# Así SIM aprende de TODOS los trades reales de las wallets copiadas.
-_SCORER_ENFORCE_IN_SIM = os.getenv("SCORER_ENFORCE_IN_SIM", "false").strip().lower() == "true"
+# La simulación debe evaluar la misma estrategia que LIVE; si solo observa los
+# rechazos, sus resultados no predicen el rendimiento del ejecutor.
+_SCORER_ENFORCE_IN_SIM = os.getenv("SCORER_ENFORCE_IN_SIM", "true").strip().lower() == "true"
 
 # Caché del precio de SOL en USD — se refresca cada 60s
 _sol_price_usd:       float = 0.0
@@ -72,6 +72,7 @@ SIM_PRIORITY_FEE_SOL = float(os.getenv("SIM_PRIORITY_FEE_SOL", "0.0004")) # 0.00
 SIM_SLIPPAGE_PCT     = float(os.getenv("SIM_SLIPPAGE_PCT",      "0.015"))  # 1.5% por leg — realista para trades <$100 en Pump.fun
 SIM_MAX_HOLD_MIN     = float(os.getenv("SIM_MAX_HOLD_MIN",      "30"))    # auto-close si la wallet no vende en N minutos (realista para pump.fun: 30min máx)
 SIM_MAX_CONFIRMATIONS = int(os.getenv("SIM_MAX_CONFIRMATIONS",  "3"))      # max wallets que pueden escalar la misma posición
+SIM_STALE_POLL_INTERVAL_S = float(os.getenv("SIM_STALE_POLL_INTERVAL_S", "15"))  # cada cuánto corre el backstop de _auto_close_stale()
 
 # Realismo brutal — 5 mejoras cuantitativas
 SIM_DYNAMIC_LIQUIDITY_LIMIT = os.getenv("SIM_DYNAMIC_LIQUIDITY_LIMIT", "true").lower() == "true"
@@ -80,9 +81,10 @@ SIM_MARKET_IMPACT           = os.getenv("SIM_MARKET_IMPACT", "true").lower() == 
 SIM_SMART_FAIL_RATE         = os.getenv("SIM_SMART_FAIL_RATE", "true").lower() == "true"
 SIM_BASE_FAIL_RATE          = float(os.getenv("SIM_BASE_FAIL_RATE", "0.08"))  # 8% baseline
 SIM_EXTENDED_METRICS        = os.getenv("SIM_EXTENDED_METRICS", "true").lower() == "true"
-# Cap de fricción combinada en salida (slippage_exit + market_impact).
-# Si supera este límite la TX fallaría en real → se escala proporcionalmente.
-SIM_MAX_EXIT_FRICTION       = float(os.getenv("SIM_MAX_EXIT_FRICTION", "0.20"))  # 20%
+# No recortar artificialmente una salida mala: en LIVE una ruta sin liquidez
+# puede costar casi toda la posición o no ejecutarse. Este cap solo protege la
+# aritmética de valores fuera de rango, no maquilla la pérdida.
+SIM_MAX_EXIT_FRICTION       = float(os.getenv("SIM_MAX_EXIT_FRICTION", "0.95"))
 # Cooldown tras cerrar una posición — evita re-entrar al mismo token antes de N minutos.
 SIM_REENTRY_COOLDOWN_MIN    = float(os.getenv("SIM_REENTRY_COOLDOWN_MIN", "5.0"))  # 5 min
 
@@ -334,6 +336,28 @@ def _auto_close_stale():
         _handle_sell(label, label, mint, symbol, price)
 
 
+def _stale_watcher_loop() -> None:
+    """Backstop independiente: antes _auto_close_stale() solo corría dentro de
+    _handle_buy(), así que si no llegaba ninguna compra nueva de ninguna
+    wallet, las posiciones vencidas quedaban sin cerrar (a veces horas) hasta
+    la próxima señal — momento en que se cerraban de golpe al precio que
+    hubiera entonces, ya desplomado. Corre para siempre en un thread daemon;
+    cualquier error se loguea y se descarta, nunca tumba el bot."""
+    while True:
+        time.sleep(SIM_STALE_POLL_INTERVAL_S)
+        try:
+            _auto_close_stale()
+        except Exception as e:
+            log.warning(f"[SIM] stale watcher: ciclo falló, sigue — {e}")
+
+
+def start() -> None:
+    """Arranca el backstop de auto-cierre en un thread daemon aparte. Llamar
+    una vez al iniciar el bot (ver main.py)."""
+    threading.Thread(target=_stale_watcher_loop, daemon=True).start()
+    log.info(f"[SIM] stale watcher arrancado — cada {SIM_STALE_POLL_INTERVAL_S:.0f}s")
+
+
 def _handle_buy(wallet: str, label: str, token_mint: str, symbol: str,
                 wallet_buy_time: float | None = None, implied_price: float = 0.0,
                 program: str = ""):
@@ -579,9 +603,12 @@ def _handle_sell(wallet: str, label: str, token_mint: str, symbol: str,
             # Precio real de la wallet — más preciso que DexScreener para tokens nuevos
             price_exit = implied_price
         else:
-            # Sin precio disponible — cerrar al precio de entrada (solo paga fees)
-            price_exit = pos["entry_price"]
-            log.debug(f"[SIM] {symbol} sin precio en DexScreener ni implied — cierre al precio de entrada")
+            # En live una posición sin precio/ruta verificable no se puede
+            # valorar ni vender con seguridad. Modelarla a precio de entrada
+            # crea un sesgo de supervivencia enorme; aplicamos un haircut de
+            # salida casi total y lo dejamos explícito en el log.
+            price_exit = pos["entry_price"] * 0.05
+            log.warning(f"[SIM] {symbol} sin precio/ruta de salida — haircut conservador de 95%")
 
     entry      = pos["entry_price"]
     amount_usd = pos["amount_usd"]

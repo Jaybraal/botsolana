@@ -32,12 +32,12 @@ log = get_logger("fetch_history")
 
 RPC_HTTP         = os.getenv("SOLANA_RPC_HTTP", "https://api.mainnet-beta.solana.com")
 DB_PATH          = "data/wallet_history.db"
-DAYS_BACK        = 14   # últimos 14 días (suficiente para patrones)
-MAX_SIGS_WALLET  = 1000 # cap por wallet — Theo tiene 30k en 30 días, no necesitamos todos
+DAYS_BACK        = int(os.getenv("HISTORY_DAYS_BACK", "14"))
+MAX_SIGS_WALLET  = int(os.getenv("HISTORY_MAX_SIGS_PER_WALLET", "1000"))
 SOL_MINT         = "So11111111111111111111111111111111111111112"
 
 # Todas las wallets a analizar (copiadas del config)
-WALLETS: dict[str, str] = {
+_LEGACY_WALLETS: dict[str, str] = {
     "Bi4rd5FH5bYEN8scZ7wevxNZyNmKHdaBcvewdPFxYdLt": "Theo",
     "4BdKaxN8G6ka4GYtQQWk4G4dZRUTX2vQH9GcXdBREFUk": "Cupsey-2",
     "6S8GezkxYUfZy9JPtYnanbcZTMB87Wjt1qx3c6ELajKC": "Nyhrox",
@@ -50,6 +50,17 @@ WALLETS: dict[str, str] = {
     "7SDs3PjT2mswKQ7Zo4FTucn9gJdtuW4jaacPA65BseHS": "Insentos",
     "DxM1hfY8FQ8dNGrucuJzhJcF8KRbjk8WBwrgKvQ9spPv": "RC",
 }
+
+# The collector must inspect the same targets as the live/SIM watcher.  Keeping
+# this old hard-coded list made the historical study silently omit new wallet
+# candidates added through TARGET_WALLETS.
+try:
+    from config import TARGET_WALLETS, WALLET_LABELS
+    WALLETS: dict[str, str] = {
+        wallet: WALLET_LABELS.get(wallet, wallet[:8]) for wallet in TARGET_WALLETS
+    } or _LEGACY_WALLETS
+except Exception:
+    WALLETS = _LEGACY_WALLETS
 
 # Programas conocidos de swap
 SWAP_PROGRAMS = {

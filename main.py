@@ -230,6 +230,9 @@ def main():
     from copytrade.root_evolution import start as start_root_evolution
     start_root_evolution()
 
+    from copytrade.simulator import start as start_sim_stale_watcher
+    start_sim_stale_watcher()
+
     console.print(Rule("[dim]Conectando WebSocket...[/]", style="bright_black"))
     console.print()
 

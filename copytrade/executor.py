@@ -429,7 +429,10 @@ async def _pre_trade_checks(token_out: str) -> tuple[bool, dict | None, float]:
     min_liquidity = float(os.getenv("MIN_LIQUIDITY_USD", "500"))
     pair_info = await get_best_pair_async(token_out)
     liquidity_usd = float((pair_info or {}).get("liquidity", {}).get("usd", 0))
-    if pair_info and liquidity_usd < min_liquidity:
+    # En producción la ausencia de datos no es una señal de liquidez segura.
+    # Copiar tokens que todavía no tienen ruta o precio verificable es justo el
+    # escenario donde una simulación puede salir pero la venta real no existe.
+    if not pair_info or liquidity_usd < min_liquidity:
         return False, pair_info, liquidity_usd
     return True, pair_info, liquidity_usd
 
@@ -453,7 +456,7 @@ async def _check_price_impact(token_in: str, token_out: str, amount_lamports: in
     """
     quote = await get_quote_async(token_in, token_out, amount_lamports)
     if not quote:
-        return True, None
+        return False, None
     impact = calc_price_impact(quote)
     if impact > MAX_PRICE_IMPACT:
         return False, impact
@@ -529,7 +532,7 @@ async def execute_copy(swap: dict) -> bool:
         # Variable FAST_COPY_PUMPPORTAL (default=true) controla este comportamiento.
         _fast_copy = (
             swap.get("source") == "pumpportal"
-            and os.getenv("FAST_COPY_PUMPPORTAL", "true").lower() == "true"
+            and os.getenv("FAST_COPY_PUMPPORTAL", "false").lower() == "true"
         )
 
         # PROTECCIÓN 3: liquidez mínima en DexScreener — SIEMPRE se corre (antes se
