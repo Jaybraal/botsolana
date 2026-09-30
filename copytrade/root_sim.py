@@ -19,6 +19,7 @@ Corre en threads daemon aparte — no puede bloquear ni afectar el trading
 real. Cualquier error se loguea y se descarta ahí.
 """
 import json
+import math
 import os
 import threading
 import time
@@ -40,9 +41,45 @@ TRADE_USD = float(os.getenv("ROOT_SIM_TRADE_USD", "50"))
 STOP_LOSS_PCT = HARD_STOP_LOSS_PCT
 MAX_HOLD_MIN = float(os.getenv("ROOT_SIM_MAX_HOLD_MIN", "30"))
 POLL_INTERVAL_S = float(os.getenv("ROOT_SIM_POLL_INTERVAL_S", "15"))
+# El modelo de ROOT debe penalizar cada entrada y salida igual que el
+# simulador principal. Se mantienen como variables propias para que ROOT no
+# importe el estado global (y los efectos secundarios) de simulator.py.
+SLIPPAGE_PCT = float(os.getenv("ROOT_SIM_SLIPPAGE_PCT", "0.015"))
+NETWORK_FEE_USD = float(os.getenv("ROOT_SIM_NETWORK_FEE_USD", "0.08"))
 
 _lock = threading.Lock()
 _positions: dict[str, dict] = {}
+
+
+def _positive_number(value) -> float | None:
+    """Convierte un valor numérico positivo; evita tratar datos ausentes como
+    liquidez ejecutable."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def _execution_costs(amount_usd: float, entry_liquidity_usd: float, exit_liquidity_usd: float) -> dict:
+    """Modelo conservador de costes para un AMM.
+
+    Replica los supuestos del simulador principal: slippage base de 1.5% por
+    lado, penalización por tamaño relativo al pool e impacto adicional al
+    vender. La liquidez se valida antes de abrir la posición, por lo que esta
+    función siempre recibe valores positivos.
+    """
+    entry_ratio = amount_usd / entry_liquidity_usd
+    exit_ratio = amount_usd / exit_liquidity_usd
+    entry_slippage = min(SLIPPAGE_PCT + entry_ratio * 0.5, 0.30)
+    exit_slippage = min(SLIPPAGE_PCT + exit_ratio * 0.5, 0.50)
+    market_impact = min(math.sqrt(exit_ratio) * 0.35, 0.40)
+    return {
+        "entry_slippage_pct": entry_slippage,
+        "exit_slippage_pct": exit_slippage,
+        "market_impact_pct": market_impact,
+        "network_fee_usd": NETWORK_FEE_USD,
+    }
 
 
 def _decide_exit(entry_price, current_price, elapsed_min, stop_loss_pct, max_hold_min):
@@ -83,8 +120,23 @@ def _append_history(history_path: str, record: dict) -> None:
 def _close_position(position: dict, exit_info: dict, current_price: float) -> dict:
     """Registra el resultado y actualiza el balance de papel del config_id
     de esta posición. Toda la persistencia pasa por acá, bajo `_lock`."""
-    pnl_pct = exit_info["pnl_pct"]
-    pnl_usd = position["amount_usd"] * pnl_pct / 100
+    gross_pnl_pct = exit_info["pnl_pct"]
+    amount_usd = position["amount_usd"]
+    entry_liquidity = _positive_number(position.get("entry_liquidity_usd"))
+    if entry_liquidity is None:
+        entry_liquidity = _positive_number((position.get("entry_context") or {}).get("liquidity_usd"))
+    # Una posición nueva siempre tiene liquidez verificada. Este fallback hace
+    # que una posición antigua o incompleta no reciba una mejora ficticia.
+    exit_liquidity = _positive_number(position.get("exit_liquidity_usd")) or entry_liquidity
+    if entry_liquidity is None or exit_liquidity is None:
+        raise ValueError("No se puede cerrar una posición ROOT sin liquidez verificable")
+
+    costs = _execution_costs(amount_usd, entry_liquidity, exit_liquidity)
+    entry_adjusted = position["entry_price"] * (1 + costs["entry_slippage_pct"])
+    exit_adjusted = current_price * (1 - costs["exit_slippage_pct"]) * (1 - costs["market_impact_pct"])
+    pnl_pct = (exit_adjusted - entry_adjusted) / entry_adjusted * 100
+    gross_pnl_usd = amount_usd * gross_pnl_pct / 100
+    pnl_usd = amount_usd * pnl_pct / 100 - costs["network_fee_usd"]
 
     with _lock:
         balance = _load_balance(position["balance_path"])
@@ -101,8 +153,14 @@ def _close_position(position: dict, exit_info: dict, current_price: float) -> di
             "amount_usd": position["amount_usd"],
             "pnl_pct": round(pnl_pct, 4),
             "pnl_usd": round(pnl_usd, 4),
+            "gross_pnl_pct": round(gross_pnl_pct, 4),
+            "gross_pnl_usd": round(gross_pnl_usd, 4),
+            "entry_liquidity_usd": entry_liquidity,
+            "exit_liquidity_usd": exit_liquidity,
+            **costs,
+            "simulation_model": "root-v2-net-execution",
             "exit_reason": exit_info["reason"],
-            "won": pnl_pct > 0,
+            "won": pnl_usd > 0,
             "hold_min": round((time.time() - position["opened_at"]) / 60, 2),
             "root_score": position["root_score"],
             "root_prob": position["root_prob"],
@@ -115,7 +173,7 @@ def _close_position(position: dict, exit_info: dict, current_price: float) -> di
 
     log.info(
         f"[root_sim] {position['wallet']} ({position['config_id']}) → cierra {position['token_mint'][:8]}... "
-        f"{'✅' if record['won'] else '❌'} {pnl_pct:+.1f}% (${pnl_usd:+.2f}) — {exit_info['reason']} "
+        f"{'✅' if record['won'] else '❌'} neto {pnl_pct:+.1f}% (${pnl_usd:+.2f}) — {exit_info['reason']} "
         f"| balance=${balance['balance']:.2f}"
     )
     return record
@@ -190,6 +248,11 @@ def open_position(
         log.debug(f"[root_sim] {wallet_label}: sin price_usd en entry_context — no se puede simular")
         return
 
+    entry_liquidity = _positive_number((entry_context or {}).get("liquidity_usd"))
+    if entry_liquidity is None:
+        log.debug(f"[root_sim] {wallet_label}: liquidez no verificable — no se puede simular")
+        return
+
     pair = get_best_pair(token_mint)
     pair_address = (pair or {}).get("pairAddress")
     if not pair_address:
@@ -207,6 +270,7 @@ def open_position(
         "root_score": root_score,
         "root_prob": root_prob,
         "entry_context": entry_context,
+        "entry_liquidity_usd": entry_liquidity,
         "stop_loss_pct": stop_loss_pct,
         "max_hold_min": max_hold_min,
         "balance_path": balance_path,

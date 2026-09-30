@@ -60,14 +60,18 @@ def test_close_position_actualiza_balance_y_history(tmp_path):
     rsim._close_position(position, exit_info, current_price=1.10)
 
     balance = json.loads(open(balance_path).read())
-    assert balance["balance"] == pytest.approx(rsim.INITIAL_BALANCE + 5.0)
+    # La rentabilidad se guarda neta de slippage, impacto y fee de red.
+    assert balance["balance"] < rsim.INITIAL_BALANCE + 5.0
 
     history = [json.loads(l) for l in open(history_path).read().strip().splitlines()]
     assert len(history) == 1
     assert history[0]["wallet"] == "Cented"
     assert history[0]["config_id"] == "champion"
-    assert history[0]["pnl_pct"] == 10.0
-    assert history[0]["pnl_usd"] == pytest.approx(5.0)
+    assert history[0]["gross_pnl_pct"] == 10.0
+    assert history[0]["gross_pnl_usd"] == pytest.approx(5.0)
+    assert history[0]["pnl_usd"] < 5.0
+    assert history[0]["entry_liquidity_usd"] == ENTRY_CONTEXT["liquidity_usd"]
+    assert history[0]["simulation_model"] == "root-v2-net-execution"
     assert history[0]["exit_reason"] == "max_hold"
     assert history[0]["won"] is True
     assert history[0]["entry_context"] == ENTRY_CONTEXT
@@ -79,7 +83,7 @@ def test_close_position_perdida_marca_won_false(tmp_path):
     position = {
         "wallet": "Theo", "token_mint": "XYZ", "config_id": "champion", "entry_price": 1.0,
         "amount_usd": 50.0, "opened_at": 1000.0, "root_score": 60, "root_prob": 0.6,
-        "entry_context": None, "balance_path": balance_path, "history_path": history_path,
+        "entry_context": ENTRY_CONTEXT, "balance_path": balance_path, "history_path": history_path,
     }
     exit_info = {"reason": "stop_loss", "pnl_pct": -15.0}
 
@@ -87,7 +91,7 @@ def test_close_position_perdida_marca_won_false(tmp_path):
 
     history = [json.loads(l) for l in open(history_path).read().strip().splitlines()]
     assert history[0]["won"] is False
-    assert history[0]["pnl_usd"] == pytest.approx(-7.5)
+    assert history[0]["pnl_usd"] < -7.5
 
 
 def test_close_position_dos_candidatos_no_comparten_balance(tmp_path):
@@ -96,18 +100,18 @@ def test_close_position_dos_candidatos_no_comparten_balance(tmp_path):
     b2, h2 = str(tmp_path / "b2.json"), str(tmp_path / "h2.json")
     pos1 = {"wallet": "A", "token_mint": "T1", "config_id": "gen0-0", "entry_price": 1.0,
             "amount_usd": 50.0, "opened_at": 0, "root_score": 1, "root_prob": 0.5,
-            "entry_context": None, "balance_path": b1, "history_path": h1}
+            "entry_context": ENTRY_CONTEXT, "balance_path": b1, "history_path": h1}
     pos2 = {"wallet": "B", "token_mint": "T1", "config_id": "gen0-1", "entry_price": 1.0,
             "amount_usd": 50.0, "opened_at": 0, "root_score": 1, "root_prob": 0.5,
-            "entry_context": None, "balance_path": b2, "history_path": h2}
+            "entry_context": ENTRY_CONTEXT, "balance_path": b2, "history_path": h2}
 
     rsim._close_position(pos1, {"reason": "max_hold", "pnl_pct": 10.0}, 1.1)
     rsim._close_position(pos2, {"reason": "max_hold", "pnl_pct": -10.0}, 0.9)
 
     bal1 = json.loads(open(b1).read())
     bal2 = json.loads(open(b2).read())
-    assert bal1["balance"] == pytest.approx(rsim.INITIAL_BALANCE + 5.0)
-    assert bal2["balance"] == pytest.approx(rsim.INITIAL_BALANCE - 5.0)
+    assert bal1["balance"] < rsim.INITIAL_BALANCE + 5.0
+    assert bal2["balance"] < rsim.INITIAL_BALANCE - 5.0
 
 
 # ── open_position: gating + multi-config (sin lanzar hilos reales) ─────────
@@ -122,6 +126,13 @@ def test_open_position_no_abre_sin_pair_address(monkeypatch):
     monkeypatch.setattr(rsim, "get_best_pair", lambda mint: None)
     monkeypatch.setattr(threading, "Thread", lambda *a, **k: pytest.fail("no debería crear Thread"))
     rsim.open_position("Cented", "MINT1", ENTRY_CONTEXT, root_score=80, root_prob=0.8)
+    assert not rsim._positions
+
+
+def test_open_position_no_abre_sin_liquidez_verificable(monkeypatch):
+    monkeypatch.setattr(rsim, "get_best_pair", lambda mint: {"pairAddress": "PAIR1"})
+    monkeypatch.setattr(threading, "Thread", lambda *a, **k: pytest.fail("no debería crear Thread"))
+    rsim.open_position("Cented", "MINT1", {"price_usd": 1e-5, "liquidity_usd": 0}, root_score=80, root_prob=0.8)
     assert not rsim._positions
 
 

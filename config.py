@@ -22,7 +22,9 @@ WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8000"))
 # --- Modo live/simulación ---
 # El modo real debe requerir una decisión explícita en el entorno de despliegue.
 # Un clon local, un reinicio sin variables o una prueba nunca deben operar fondos.
-_LIVE_MODE = os.getenv("LIVE_MODE", "false").lower() == "true"
+# SIMULATION_MODE tiene prioridad para poder congelar cualquier ejecución real.
+SIMULATION_MODE = os.getenv("SIMULATION_MODE", "true").lower() == "true"
+_LIVE_MODE = os.getenv("LIVE_MODE", "false").lower() == "true" and not SIMULATION_MODE
 
 # --- Tu wallet ---
 WALLET_PUBKEY     = os.getenv("WALLET_PUBKEY", "") if _LIVE_MODE else ""

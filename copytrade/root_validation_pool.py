@@ -18,6 +18,8 @@ log = get_logger("root_validation_pool")
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 CHAMPION_PATH = os.path.join(_DATA_DIR, "root_champion.json")
 PROMOTION_MIN_TRADES = int(os.getenv("ROOT_PROMOTION_MIN_TRADES", "20"))
+PROMOTION_MIN_PROFIT_FACTOR = float(os.getenv("ROOT_PROMOTION_MIN_PROFIT_FACTOR", "1.20"))
+PROMOTION_MAX_SINGLE_TRADE_SHARE = float(os.getenv("ROOT_PROMOTION_MAX_SINGLE_TRADE_SHARE", "0.35"))
 
 _active_candidates: dict[str, Config] = {}
 _lock = threading.Lock()
@@ -81,12 +83,47 @@ def _save_champion(config: Config) -> None:
         json.dump(config_to_dict(config), f, indent=2)
 
 
+def _eligible_history(history: list[dict]) -> list[dict]:
+    """Devuelve sólo operaciones ejecutables con P&L neto del modelo actual.
+
+    Los registros anteriores a root-v2 se conservan en disco para auditoría,
+    pero no sirven para afirmar que una configuración es rentable: no tenían
+    ni liquidez verificable ni costes de ejecución.
+    """
+    eligible = []
+    for trade in history:
+        liquidity = trade.get("entry_liquidity_usd")
+        try:
+            executable = float(liquidity) > 0
+            net_pnl = float(trade["pnl_usd"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if executable and trade.get("simulation_model") == "root-v2-net-execution":
+            eligible.append({**trade, "pnl_usd": net_pnl})
+    return eligible
+
+
+def _profit_factor(pnls: list[float]) -> float:
+    gains = sum(pnl for pnl in pnls if pnl > 0)
+    losses = abs(sum(pnl for pnl in pnls if pnl < 0))
+    if losses == 0:
+        return float("inf") if gains > 0 else 0.0
+    return gains / losses
+
+
+def _single_trade_share(pnls: list[float]) -> float:
+    gains = sum(pnl for pnl in pnls if pnl > 0)
+    return max(pnls, default=0.0) / gains if gains > 0 else 1.0
+
+
 def promote_if_ready(candidate: Config, champion_history: list[dict]) -> bool:
     """Criterio de promoción: muestra mínima (PROMOTION_MIN_TRADES) en
-    ambos lados, y el candidato tiene que ganarle al campeón incluso
-    excluyendo el mejor trade de cada uno — así no se promueve por un solo
-    outlier de suerte. Devuelve True si promovió."""
-    cand_history = _read_history(candidate.config_id)
+    ambos lados. Sólo cuenta el modelo neto con liquidez verificable. El
+    candidato necesita factor de beneficio suficiente, no puede depender de
+    un solo acierto y debe ganarle al campeón aun excluyendo el mejor trade.
+    Devuelve True si promovió."""
+    cand_history = _eligible_history(_read_history(candidate.config_id))
+    champion_history = _eligible_history(champion_history)
     if len(cand_history) < PROMOTION_MIN_TRADES or len(champion_history) < PROMOTION_MIN_TRADES:
         return False
 
@@ -95,13 +132,19 @@ def promote_if_ready(candidate: Config, champion_history: list[dict]) -> bool:
     cand_excl = sum(cand_pnls) - max(cand_pnls)
     champ_excl = sum(champ_pnls) - max(champ_pnls)
 
-    if cand_excl <= champ_excl:
+    if (
+        cand_excl <= 0
+        or cand_excl <= champ_excl
+        or _profit_factor(cand_pnls) < PROMOTION_MIN_PROFIT_FACTOR
+        or _single_trade_share(cand_pnls) > PROMOTION_MAX_SINGLE_TRADE_SHARE
+    ):
         return False
 
     _save_champion(candidate)
     log.info(
         f"[root_validation_pool] {candidate.config_id} promovido a campeón "
-        f"(pnl_excl=${cand_excl:.2f} vs ${champ_excl:.2f} del anterior, {len(cand_history)} trades)"
+        f"(pnl_neto_excl=${cand_excl:.2f} vs ${champ_excl:.2f}, "
+        f"PF={_profit_factor(cand_pnls):.2f}, {len(cand_history)} trades ejecutables)"
     )
     return True
 

@@ -17,6 +17,7 @@ import os
 import threading
 
 from copytrade import root_validation_pool
+from copytrade.root_signal_ledger import record_signal
 from copytrade.root_config import Config, config_from_dict, decide as config_decide, neutral_config
 from utils.logger import get_logger
 
@@ -71,6 +72,9 @@ def decide(wallet_label: str, entry_context: dict | None, token_mint: str | None
 
     champion = load_champion()
     decision = config_decide(champion, wallet_label, entry_context)
+    # La señal queda auditada antes del hilo de I/O. Así podemos distinguir
+    # falta de señales, señales no ejecutables y operaciones realmente cerradas.
+    record_signal(wallet_label, token_mint, entry_context, decision, champion.config_id)
     threading.Thread(
         target=_run, args=(wallet_label, entry_context, token_mint, champion, decision), daemon=True,
     ).start()
